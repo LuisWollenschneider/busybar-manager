@@ -223,13 +223,13 @@ A zero-dependency end-to-end suite against a mock BUSY Bar + mock GitHub, coveri
 
 ## Related projects
 
-- **[busybar-emulator](https://github.com/maxswinkels/busybar-emulator)** — the device: a faithful local BUSY Bar with the same HTTP API, fonts and pixels, to build and test against without hardware.
-- **[busybar-apps](https://github.com/maxswinkels/busybar-apps)** — the apps: a community gallery of 72×16 apps this manager installs from.
-- **[busy.app](https://busy.app)** — the real hardware and official apps from Flipper Devices.
+- **[busybar-emulator](https://github.com/maxswinkels/busybar-emulator)**: the device. A faithful local BUSY Bar with the same HTTP API, fonts and pixels, to build and test against without hardware.
+- **[busybar-apps](https://github.com/maxswinkels/busybar-apps)**: the apps. A community gallery of 72×16 apps this manager installs from.
+- **[busy.app](https://busy.app)**: the real hardware and official apps from Flipper Devices.
 
 ## License
 
-Code is [MIT](LICENSE).
+Code is [MIT](LICENSE). Bundled BUSY logo, app icon and device artwork are © Flipper Devices, from the open-source [firmware](https://github.com/busy-app/busybar-firmware) under CC-BY 4.0. See [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md) for the details.
 
 "BUSY Bar" is a trademark of Flipper Devices. This project is unaffiliated and unofficial.
 
