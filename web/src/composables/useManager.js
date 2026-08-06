@@ -4,6 +4,7 @@ import { reactive } from 'vue'
 // Shape matches GET /api/_manager/state exactly (see docs/CONTRACT.md).
 export const manager = reactive({
   barHost: '',
+  tokenSet: false, // whether a bar token is configured; the token itself is never sent to the frontend
   listenPort: 8321,
   barReachable: false,
   screenOwner: null, // { applicationName, slug, since } | null

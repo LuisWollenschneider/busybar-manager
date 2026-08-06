@@ -68,7 +68,7 @@ function normalizeLibrary(rawLib) {
 }
 
 function defaultConfig() {
-  return { listenPort: 8321, barHost: "10.0.4.20", appsDirs: [], apps: {}, library: normalizeLibrary(undefined) };
+  return { listenPort: 8321, barHost: "10.0.4.20", token: null, appsDirs: [], apps: {}, library: normalizeLibrary(undefined) };
 }
 
 function defaultVariation() {
@@ -87,6 +87,7 @@ function normalizeConfig(raw) {
   const cfg = Object.assign(defaultConfig(), raw && typeof raw === "object" ? raw : {});
   if (typeof cfg.listenPort !== "number") cfg.listenPort = 8321;
   if (typeof cfg.barHost !== "string" || !cfg.barHost) cfg.barHost = "10.0.4.20";
+  cfg.token = typeof cfg.token === "string" && cfg.token ? cfg.token : null;
   if (!Array.isArray(cfg.appsDirs)) cfg.appsDirs = [];
   if (!cfg.apps || typeof cfg.apps !== "object") cfg.apps = {};
   cfg.library = normalizeLibrary(raw && raw.library);
@@ -210,7 +211,7 @@ function parseYamlSubset(text) {
 // appsDirs (a folder with app.py [+ manifest.yaml], or a flat *.py file),
 // and auto-discover their argparse options by parsing `--help` output.
 
-const ARG_SKIP = new Set(["-h", "--help", "--host", "--test"]);
+const ARG_SKIP = new Set(["-h", "--help", "--host", "--token", "--test"]);
 const optionsCache = {}; // scriptPath -> { mtime, options }
 
 function discoverOptions(scriptPath) {
@@ -692,6 +693,15 @@ function parseHostPort(raw) {
   return { hostname: s, port: 80 };
 }
 
+// Optional bar credential (config.token). When set it rides along on every
+// bar-bound request as the `X-API-Token` header (the only form the bar
+// honours). Applied after filterHeaders(), so the configured value always
+// wins over anything the caller sent.
+function withBarToken(headers) {
+  if (config.token) headers["X-API-Token"] = config.token;
+  return headers;
+}
+
 function filterHeaders(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers || {})) {
@@ -704,7 +714,7 @@ function filterHeaders(headers) {
 function forwardToBar(method, urlPath, reqHeaders, body) {
   return new Promise((resolve) => {
     const target = parseHostPort(config.barHost);
-    const headers = filterHeaders(reqHeaders);
+    const headers = withBarToken(filterHeaders(reqHeaders));
     if (body && body.length) headers["content-length"] = String(body.length);
     else delete headers["content-length"];
     const options = { hostname: target.hostname, port: target.port, path: urlPath, method, headers, timeout: 10000 };
@@ -729,7 +739,7 @@ function sendDisplayClear(appName) {
     const options = {
       hostname: target.hostname, port: target.port,
       path: `/api/display/draw?application_name=${encodeURIComponent(appName)}`,
-      method: "DELETE", timeout: 5000,
+      method: "DELETE", headers: withBarToken({}), timeout: 5000,
     };
     const r = http.request(options, (resp) => {
       resp.resume();
@@ -810,7 +820,7 @@ function handleBarPassthrough(req, res, p) {
   }
   const target = parseHostPort(config.barHost);
   const upstreamPath = req.url.slice("/api/_bar".length) || "/";
-  const headers = filterHeaders(req.headers);
+  const headers = withBarToken(filterHeaders(req.headers));
   delete headers["content-length"];
 
   // No `timeout` option: the socket must stay open indefinitely for SSE.
@@ -855,7 +865,10 @@ async function checkBarReachable() {
     const t = setTimeout(() => controller.abort(), 3000);
     let ok = false;
     try {
-      const resp = await fetch(`http://${target.hostname}:${target.port}/api/version`, { signal: controller.signal });
+      const resp = await fetch(`http://${target.hostname}:${target.port}/api/version`, {
+        signal: controller.signal,
+        headers: withBarToken({}),
+      });
       ok = resp.ok;
     } finally {
       clearTimeout(t);
@@ -1437,6 +1450,7 @@ function buildState() {
   }
   return {
     barHost: config.barHost,
+    tokenSet: !!config.token,
     listenPort: getListenPort(),
     barReachable,
     screenOwner: currentScreenOwner(),
@@ -1572,6 +1586,13 @@ function apiSettings(body, res) {
   if (body.barHost !== undefined) {
     if (typeof body.barHost !== "string" || !body.barHost) return sendJSON(res, 400, { error: "barHost must be a non-empty string" });
     config.barHost = body.barHost;
+    changed = true;
+  }
+  // Bar token: `""` clears it, any other string sets it. Never echoed back —
+  // state only carries `tokenSet` (docs/CONTRACT.md, "Proxy").
+  if (body.token !== undefined) {
+    if (typeof body.token !== "string") return sendJSON(res, 400, { error: "token must be a string" });
+    config.token = body.token ? body.token : null;
     changed = true;
   }
   if (body.appsDirs !== undefined) {

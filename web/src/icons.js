@@ -39,6 +39,10 @@ export const icons = {
   play: f('<path d="M17.9988 12L7.99878 18V6L17.9988 12Z" fill="currentColor"/>'),
   // firmware: search.svg
   search: f('<path fill-rule="evenodd" clip-rule="evenodd" d="M10.793 3.5C14.9351 3.5 18.293 6.85786 18.293 11C18.293 12.6041 17.7874 14.0892 16.9297 15.3086L20.707 19.0859L19.293 20.5L15.5723 16.7793C14.2745 17.8537 12.6094 18.5 10.793 18.5C6.65083 18.5 3.29297 15.1421 3.29297 11C3.29297 6.85786 6.65083 3.5 10.793 3.5ZM10.793 5.5C7.7554 5.5 5.29297 7.96243 5.29297 11C5.29297 14.0376 7.7554 16.5 10.793 16.5C13.8305 16.5 16.293 14.0376 16.293 11C16.293 7.96243 13.8305 5.5 10.793 5.5Z" fill="currentColor"/>'),
+  // no firmware equivalent (the set has no eye glyph) — reveal/hide toggle for
+  // the password inputs that hold a token.
+  eye: s('<path d="M2.6 12S6 5.75 12 5.75 21.4 12 21.4 12 18 18.25 12 18.25 2.6 12 2.6 12Z"/><circle cx="12" cy="12" r="3.1"/>'),
+  eyeOff: s('<path d="M10.7 6.05A9.6 9.6 0 0 1 12 5.75c6 0 9.4 6.25 9.4 6.25a17.4 17.4 0 0 1-3.2 4.05"/><path d="M6.3 7.85A17 17 0 0 0 2.6 12S6 18.25 12 18.25a9.7 9.7 0 0 0 3.4-.6"/><path d="M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4"/><line x1="4" y1="4" x2="20" y2="20"/>'),
   // firmware: archive.svg — no dedicated "library" icon in the set; archive reads
   // best for "a shelf of installable apps" and is used consistently for the tab
   // + section-card + catalog cards.

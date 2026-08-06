@@ -319,6 +319,13 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .rb-hint{font-size:12px;color:var(--muted);line-height:1.5}
 .token-row{display:flex;gap:8px;align-items:center}
 .token-row input{flex:1;min-width:0}
+/* Reveal/hide toggle sitting inside a token input (the input keeps its own
+   right padding free for it). */
+.token-input{position:relative;flex:1;min-width:0}
+.token-input input{padding-right:38px}
+.token-reveal{position:absolute;right:5px;top:50%;transform:translateY(-50%);width:28px;height:28px;padding:0;border:none;background:none;border-radius:999px;color:var(--faint);cursor:pointer;display:grid;place-items:center;transition:.15s}
+.token-reveal:hover{color:var(--text);background:var(--btn-hover)}
+.token-reveal svg{width:16px;height:16px;display:block}
 .upload-drop{position:relative;display:flex;align-items:center;justify-content:center;text-align:center;border:1.5px dashed var(--track);border-radius:12px;padding:22px 16px;cursor:pointer;color:var(--muted);font-size:13px;transition:.15s;background:var(--card)}
 .upload-drop:hover{border-color:var(--brand);color:var(--text)}
 .upload-drop.dragging{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 8%,transparent);color:var(--text)}

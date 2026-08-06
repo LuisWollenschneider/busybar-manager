@@ -6,6 +6,8 @@ The manager listens on **port 8321** (configurable). One port for everything: pr
 
 Everything under `/api/*` that does NOT start with `/api/_manager` and is not `/events` is forwarded 1-to-1 to `http://<barHost>` (default `10.0.4.20`). Method, query string, headers (minus hop-by-hop), body, and status code stay intact.
 
+Optional bar credential: `token` (string|null) at the top level of config. If set, every bar-bound request carries it as header `X-API-Token: <token>` the configured value overrides anything the caller sent. NEVER echo the token back in state/settings payloads.
+
 Special case: `POST /api/display/draw`: the manager parses the JSON body:
 - records `application_name` (the payload also accepts `app_id`; support both) + response status;
 - if the sending app (matched on application_name → slug, see the mapping below) has an active variation with a `priority` override, `priority` in the payload is replaced before forwarding;
@@ -21,6 +23,7 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
 ```json
 {
   "barHost": "10.0.4.20",
+  "tokenSet": false,
   "listenPort": 8321,
   "barReachable": true,
   "screenOwner": { "applicationName": "flightradar", "slug": "flightradar", "since": 1730000000000 },
@@ -52,7 +55,7 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
 - `PUT /api/_manager/apps/:slug/variations/:name` body `{ "args": {"--brightness": "50"}, "env": {"API_KEY": "x"}, "priority": 40 }`: create/overwrite (persist).
 - `DELETE /api/_manager/apps/:slug/variations/:name` (the selected one and "default" must not be removed if it is the last one; when the selected one is removed, the selection falls back to "default").
 - `GET /api/_manager/apps/:slug/log` → `{ "lines": ["…"] }` (the last ±500 lines, stdout+stderr merged with a prefix).
-- `PUT /api/_manager/settings` body `{ "barHost"?, "appsDirs"? }` (persist; changing barHost reconnects the mirror and the proxy target).
+- `PUT /api/_manager/settings` body `{ "barHost"?, "token"?, "appsDirs"? }` (persist; changing barHost reconnects the mirror and the proxy target). `token`: `""` clears it, any other string sets it, omitting the key leaves the stored token untouched — the frontend never receives the token back, so a blank input field means "keep".
 - `GET /api/_manager/health` → `{ "ok": true }`
 
 Errors: `{ "error": "…" }` with an appropriate 4xx/5xx.
@@ -83,6 +86,7 @@ Source order: (1) firmware ws, (2) `/api/screen` polling (the real bar), (3) **e
 {
   "listenPort": 8321,
   "barHost": "10.0.4.20",
+  "token": null,
   "appsDirs": ["/Users/maxswinkels/Developer/busybar-apps/apps"],
   "apps": {
     "clock": {
