@@ -1,0 +1,15 @@
+{
+  "name": "busybar-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Supervisor + reverse proxy for BUSY Bar community apps.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "bash test/run-tests.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

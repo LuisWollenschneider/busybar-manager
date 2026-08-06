@@ -1,0 +1,31 @@
+{
+  "listenPort": 8321,
+  "barHost": "10.0.4.20",
+  "appsDirs": [],
+  "apps": {
+    "clock": {
+      "enabled": false,
+      "variation": "default",
+      "variations": {
+        "default": { "args": {}, "env": {}, "priority": null }
+      }
+    },
+    "buienradar-alarm": {
+      "enabled": false,
+      "variation": "default",
+      "variations": {
+        "default": {
+          "args": { "--lat": "0.0", "--lon": "0.0" },
+          "env": {},
+          "priority": null
+        }
+      }
+    }
+  },
+  "library": {
+    "checkIntervalHours": 6,
+    "repos": [
+      { "repo": "maxswinkels/busybar-apps", "branch": "main" }
+    ]
+  }
+}

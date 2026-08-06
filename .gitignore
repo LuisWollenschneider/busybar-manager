@@ -1,0 +1,13 @@
+node_modules/
+logs/
+apps/
+.venv/
+__pycache__/
+.DS_Store
+config.json.tmp*
+# Local runtime config: holds personal args (coords) and any library token —
+# never commit. Ship config.example.json as the template instead.
+config.json
+config.json.corrupt-*
+# Local Claude Code permission overrides
+.claude/settings.local.json
