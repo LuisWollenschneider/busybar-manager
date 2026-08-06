@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { manager, updateSettings } from '../composables/useManager'
 import { icons } from '../icons'
 
@@ -77,6 +77,20 @@ const form = reactive({ barHost: '', barToken: '' })
 // never sent to the frontend (state only carries `tokenSet`), so its field
 // always starts empty: blank on save = keep the stored token.
 form.barHost = manager.barHost || ''
+
+// A refresh straight onto this tab mounts us before the first state frame
+// lands, so the seed above sees ''. Seed again when the real value arrives —
+// once, and only while the field is still untouched, never over live typing.
+if (!form.barHost) {
+  const stop = watch(
+    () => manager.barHost,
+    (v) => {
+      if (!v) return
+      if (!form.barHost) form.barHost = v
+      stop()
+    }
+  )
+}
 
 async function save() {
   const token = form.barToken.trim()
