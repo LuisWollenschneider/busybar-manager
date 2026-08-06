@@ -855,6 +855,71 @@ function handleBarPassthrough(req, res, p) {
   proxyReq.end();
 }
 
+// WebSocket passthrough for /api/* upgrades — in practice the firmware status
+// stream `/api/status/ws` that feeds the frontend mirror. It has to go through
+// the manager (rather than the browser dialling the bar directly) because the
+// bar credential never leaves the server, and on a ws upgrade the firmware only
+// accepts it as the `X-API-Token` *query parameter* — a browser WebSocket can't
+// set the X-API-Token header. Raw tunnel: forward the handshake, then pipe the
+// two sockets, so no ws framing/dependency is needed here.
+function handleUpgrade(req, socket, head) {
+  socket.on("error", () => {});
+  let u;
+  try {
+    u = new URL(req.url, "http://localhost");
+  } catch (_) {
+    return socket.destroy();
+  }
+  // Manager's own API has no ws endpoints; everything else under /api/ is the bar.
+  if (!u.pathname.startsWith("/api/") || u.pathname.startsWith("/api/_manager/")) {
+    socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+    return;
+  }
+  const target = parseHostPort(config.barHost);
+  if (config.token) u.searchParams.set("X-API-Token", config.token);
+  // filterHeaders() drops the hop-by-hop handshake headers; the ws-specific
+  // ones (sec-websocket-key/version/protocol/extensions) survive and must.
+  const headers = withBarToken(filterHeaders(req.headers));
+  delete headers["content-length"];
+  headers.host = `${target.hostname}:${target.port}`;
+  headers.connection = "Upgrade";
+  headers.upgrade = req.headers.upgrade || "websocket";
+
+  // No `timeout`: the tunnel stays open for as long as the stream lasts.
+  const proxyReq = http.request({
+    hostname: target.hostname,
+    port: target.port,
+    path: u.pathname + u.search,
+    method: req.method,
+    headers,
+  });
+  proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    proxySocket.on("error", () => socket.destroy());
+    const lines = [`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || "Switching Protocols"}`];
+    for (const [k, v] of Object.entries(proxyRes.headers)) {
+      if (Array.isArray(v)) for (const one of v) lines.push(`${k}: ${one}`);
+      else lines.push(`${k}: ${v}`);
+    }
+    socket.write(lines.join("\r\n") + "\r\n\r\n");
+    if (proxyHead && proxyHead.length) socket.write(proxyHead);
+    // Bytes the client already sent after its handshake belong on the wire
+    // upstream, ahead of anything piped later.
+    if (head && head.length) proxySocket.write(head);
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+    socket.on("close", () => proxySocket.destroy());
+    proxySocket.on("close", () => socket.destroy());
+  });
+  // The bar refused the upgrade (e.g. 401 on a wrong/missing token): pass the
+  // status line on so the browser's ws just fails and the mirror falls back.
+  proxyReq.on("response", (proxyRes) => {
+    proxyRes.resume();
+    socket.end(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ""}\r\n\r\n`);
+  });
+  proxyReq.on("error", () => socket.destroy());
+  proxyReq.end();
+}
+
 /* ---------------------------- bar reachability ----------------------------- */
 
 let barReachable = false;
@@ -1895,6 +1960,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/api/")) return handleProxy(req, res, p, method);
   return handleStatic(req, res, p);
 });
+
+server.on("upgrade", handleUpgrade);
 
 /* --------------------------------- lifecycle --------------------------------- */
 

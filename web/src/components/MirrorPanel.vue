@@ -163,7 +163,12 @@ async function startWs({ silent = false } = {}) {
   // rung that's already working).
   if (!silent) source.value = 'connecting'
   stopWs()
-  stream = new LocalStateStream({ addr: props.barHost })
+  // Same origin, not props.barHost: the manager tunnels /api/status/ws to the
+  // bar (server.js handleUpgrade). A bar with a token set only accepts the
+  // credential as the `X-API-Token` query parameter on the ws upgrade, and a
+  // browser WebSocket can't send headers — so the hop that owns the token has
+  // to be the manager, exactly like the /api/screen poll fallback below.
+  stream = new LocalStateStream({ addr: window.location.origin })
   clearWatchdog()
   fallbackTimer = setTimeout(() => {
     if (Date.now() - lastFrameAt > 2900) fallToPoll()

@@ -6,7 +6,7 @@ The manager listens on **port 8321** (configurable). One port for everything: pr
 
 Everything under `/api/*` that does NOT start with `/api/_manager` and is not `/events` is forwarded 1-to-1 to `http://<barHost>` (default `10.0.4.20`). Method, query string, headers (minus hop-by-hop), body, and status code stay intact.
 
-Optional bar credential: `token` (string|null) at the top level of config. If set, every bar-bound request carries it as header `X-API-Token: <token>` the configured value overrides anything the caller sent. NEVER echo the token back in state/settings payloads.
+Optional bar credential: `token` (string|null) at the top level of config. If set, every bar-bound request carries it as header `X-API-Token: <token>` the configured value overrides anything the caller sent. Exception: WebSocket upgrades (`/api/status/ws`) carry it as the `X-API-Token` **query parameter** instead, which is the only form the bar honours there. NEVER echo the token back in state/settings payloads.
 
 Special case: `POST /api/display/draw`: the manager parses the JSON body:
 - records `application_name` (the payload also accepts `app_id`; support both) + response status;
@@ -76,7 +76,7 @@ Same pattern as busybar-emulator. Events:
 
 Source order: (1) firmware ws, (2) `/api/screen` polling (the real bar), (3) **emulator SSE**: `EventSource('/api/_bar/events')` → `state` events contain `frame: { application_name, elements, ts }`; render with the vendored emulator renderer (`web/src/lib/emu/renderer.js` + `atlas.js` + `public/fonts/font-atlas.json`, taken from busybar-emulator) so the image is pixel-identical to the emulator itself. Asset references (animations/images) via `/api/_bar/...`. If this also drops out → placeholder.
 
-1. Primary: the browser itself opens `ws://<barHost>/api/status/ws`, sends `{"enable": true}` (text JSON), and receives binary protobuf `BSB_State` messages. Decode + render with npm `@busy-app/busy-lib@^0.17` (exports include `BSB_State`, `BSB_Frame`, `LEDRenderer`, `LocalStateStream`, `convertRGB888toRGBA`). See the firmware reference `StateScreenStream.vue` (copy in docs/reference/). Front display = 72×16, a frame can be RGB (3 bytes/pixel, order BGR→see the convert helpers) or with alpha; RLE compression possible: use the busy-lib helpers instead of decoding yourself where possible.
+1. Primary: the browser opens `ws://<manager>/api/status/ws` (same origin); the manager tunnels the upgrade to `ws://<barHost>/api/status/ws` and, when `token` is configured, appends it as the **`X-API-Token` query parameter** — on a ws upgrade the bar accepts the credential only that way, and a browser `WebSocket` cannot set the `X-API-Token` header. The frontend then sends `{"enable": true}` (text JSON), and receives binary protobuf `BSB_State` messages. Decode + render with npm `@busy-app/busy-lib@^0.17` (exports include `BSB_State`, `BSB_Frame`, `LEDRenderer`, `LocalStateStream`, `convertRGB888toRGBA`). See the firmware reference `StateScreenStream.vue` (copy in docs/reference/). Front display = 72×16, a frame can be RGB (3 bytes/pixel, order BGR→see the convert helpers) or with alpha; RLE compression possible: use the busy-lib helpers instead of decoding yourself where possible.
 2. Fallback (ws fails or no frames within 3 s): poll `GET /api/screen?display=0` via the manager proxy (same origin) at 1 fps; the response is base64 BMP → `<img src="data:image/bmp;base64,…">` to a canvas.
 3. Neither (e.g. emulator as bar): show a clean "no mirror available" placeholder.
 
