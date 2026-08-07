@@ -68,7 +68,7 @@ function normalizeLibrary(rawLib) {
 }
 
 function defaultConfig() {
-  return { listenPort: 8321, barHost: "10.0.4.20", appsDirs: [], apps: {}, library: normalizeLibrary(undefined) };
+  return { listenPort: 8321, barHost: "10.0.4.20", token: null, appsDirs: [], apps: {}, library: normalizeLibrary(undefined) };
 }
 
 function defaultVariation() {
@@ -87,6 +87,7 @@ function normalizeConfig(raw) {
   const cfg = Object.assign(defaultConfig(), raw && typeof raw === "object" ? raw : {});
   if (typeof cfg.listenPort !== "number") cfg.listenPort = 8321;
   if (typeof cfg.barHost !== "string" || !cfg.barHost) cfg.barHost = "10.0.4.20";
+  cfg.token = typeof cfg.token === "string" && cfg.token ? cfg.token : null;
   if (!Array.isArray(cfg.appsDirs)) cfg.appsDirs = [];
   if (!cfg.apps || typeof cfg.apps !== "object") cfg.apps = {};
   cfg.library = normalizeLibrary(raw && raw.library);
@@ -210,7 +211,7 @@ function parseYamlSubset(text) {
 // appsDirs (a folder with app.py [+ manifest.yaml], or a flat *.py file),
 // and auto-discover their argparse options by parsing `--help` output.
 
-const ARG_SKIP = new Set(["-h", "--help", "--host", "--test"]);
+const ARG_SKIP = new Set(["-h", "--help", "--host", "--token", "--test"]);
 const optionsCache = {}; // scriptPath -> { mtime, options }
 
 function discoverOptions(scriptPath) {
@@ -692,6 +693,15 @@ function parseHostPort(raw) {
   return { hostname: s, port: 80 };
 }
 
+// Optional bar credential (config.token). When set it rides along on every
+// bar-bound request as the `X-API-Token` header (the only form the bar
+// honours). Applied after filterHeaders(), so the configured value always
+// wins over anything the caller sent.
+function withBarToken(headers) {
+  if (config.token) headers["X-API-Token"] = config.token;
+  return headers;
+}
+
 function filterHeaders(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers || {})) {
@@ -704,7 +714,7 @@ function filterHeaders(headers) {
 function forwardToBar(method, urlPath, reqHeaders, body) {
   return new Promise((resolve) => {
     const target = parseHostPort(config.barHost);
-    const headers = filterHeaders(reqHeaders);
+    const headers = withBarToken(filterHeaders(reqHeaders));
     if (body && body.length) headers["content-length"] = String(body.length);
     else delete headers["content-length"];
     const options = { hostname: target.hostname, port: target.port, path: urlPath, method, headers, timeout: 10000 };
@@ -729,7 +739,7 @@ function sendDisplayClear(appName) {
     const options = {
       hostname: target.hostname, port: target.port,
       path: `/api/display/draw?application_name=${encodeURIComponent(appName)}`,
-      method: "DELETE", timeout: 5000,
+      method: "DELETE", headers: withBarToken({}), timeout: 5000,
     };
     const r = http.request(options, (resp) => {
       resp.resume();
@@ -810,7 +820,7 @@ function handleBarPassthrough(req, res, p) {
   }
   const target = parseHostPort(config.barHost);
   const upstreamPath = req.url.slice("/api/_bar".length) || "/";
-  const headers = filterHeaders(req.headers);
+  const headers = withBarToken(filterHeaders(req.headers));
   delete headers["content-length"];
 
   // No `timeout` option: the socket must stay open indefinitely for SSE.
@@ -845,6 +855,71 @@ function handleBarPassthrough(req, res, p) {
   proxyReq.end();
 }
 
+// WebSocket passthrough for /api/* upgrades — in practice the firmware status
+// stream `/api/status/ws` that feeds the frontend mirror. It has to go through
+// the manager (rather than the browser dialling the bar directly) because the
+// bar credential never leaves the server, and on a ws upgrade the firmware only
+// accepts it as the `X-API-Token` *query parameter* — a browser WebSocket can't
+// set the X-API-Token header. Raw tunnel: forward the handshake, then pipe the
+// two sockets, so no ws framing/dependency is needed here.
+function handleUpgrade(req, socket, head) {
+  socket.on("error", () => {});
+  let u;
+  try {
+    u = new URL(req.url, "http://localhost");
+  } catch (_) {
+    return socket.destroy();
+  }
+  // Manager's own API has no ws endpoints; everything else under /api/ is the bar.
+  if (!u.pathname.startsWith("/api/") || u.pathname.startsWith("/api/_manager/")) {
+    socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+    return;
+  }
+  const target = parseHostPort(config.barHost);
+  if (config.token) u.searchParams.set("X-API-Token", config.token);
+  // filterHeaders() drops the hop-by-hop handshake headers; the ws-specific
+  // ones (sec-websocket-key/version/protocol/extensions) survive and must.
+  const headers = withBarToken(filterHeaders(req.headers));
+  delete headers["content-length"];
+  headers.host = `${target.hostname}:${target.port}`;
+  headers.connection = "Upgrade";
+  headers.upgrade = req.headers.upgrade || "websocket";
+
+  // No `timeout`: the tunnel stays open for as long as the stream lasts.
+  const proxyReq = http.request({
+    hostname: target.hostname,
+    port: target.port,
+    path: u.pathname + u.search,
+    method: req.method,
+    headers,
+  });
+  proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    proxySocket.on("error", () => socket.destroy());
+    const lines = [`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || "Switching Protocols"}`];
+    for (const [k, v] of Object.entries(proxyRes.headers)) {
+      if (Array.isArray(v)) for (const one of v) lines.push(`${k}: ${one}`);
+      else lines.push(`${k}: ${v}`);
+    }
+    socket.write(lines.join("\r\n") + "\r\n\r\n");
+    if (proxyHead && proxyHead.length) socket.write(proxyHead);
+    // Bytes the client already sent after its handshake belong on the wire
+    // upstream, ahead of anything piped later.
+    if (head && head.length) proxySocket.write(head);
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+    socket.on("close", () => proxySocket.destroy());
+    proxySocket.on("close", () => socket.destroy());
+  });
+  // The bar refused the upgrade (e.g. 401 on a wrong/missing token): pass the
+  // status line on so the browser's ws just fails and the mirror falls back.
+  proxyReq.on("response", (proxyRes) => {
+    proxyRes.resume();
+    socket.end(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ""}\r\n\r\n`);
+  });
+  proxyReq.on("error", () => socket.destroy());
+  proxyReq.end();
+}
+
 /* ---------------------------- bar reachability ----------------------------- */
 
 let barReachable = false;
@@ -855,7 +930,10 @@ async function checkBarReachable() {
     const t = setTimeout(() => controller.abort(), 3000);
     let ok = false;
     try {
-      const resp = await fetch(`http://${target.hostname}:${target.port}/api/version`, { signal: controller.signal });
+      const resp = await fetch(`http://${target.hostname}:${target.port}/api/version`, {
+        signal: controller.signal,
+        headers: withBarToken({}),
+      });
       ok = resp.ok;
     } finally {
       clearTimeout(t);
@@ -1437,6 +1515,7 @@ function buildState() {
   }
   return {
     barHost: config.barHost,
+    tokenSet: !!config.token,
     listenPort: getListenPort(),
     barReachable,
     screenOwner: currentScreenOwner(),
@@ -1572,6 +1651,13 @@ function apiSettings(body, res) {
   if (body.barHost !== undefined) {
     if (typeof body.barHost !== "string" || !body.barHost) return sendJSON(res, 400, { error: "barHost must be a non-empty string" });
     config.barHost = body.barHost;
+    changed = true;
+  }
+  // Bar token: `""` clears it, any other string sets it. Never echoed back —
+  // state only carries `tokenSet` (docs/CONTRACT.md, "Proxy").
+  if (body.token !== undefined) {
+    if (typeof body.token !== "string") return sendJSON(res, 400, { error: "token must be a string" });
+    config.token = body.token ? body.token : null;
     changed = true;
   }
   if (body.appsDirs !== undefined) {
@@ -1874,6 +1960,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/api/")) return handleProxy(req, res, p, method);
   return handleStatic(req, res, p);
 });
+
+server.on("upgrade", handleUpgrade);
 
 /* --------------------------------- lifecycle --------------------------------- */
 

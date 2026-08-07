@@ -13,6 +13,11 @@ export default defineConfig({
   server: {
     proxy: useMock
       ? {}
-      : ['/api', '/events'].reduce((a, p) => ((a[p] = 'http://127.0.0.1:8321'), a), {}),
+      : // ws: true so the mirror's /api/status/ws upgrade reaches the daemon
+        // (which tunnels it on to the bar) instead of hitting Vite's own HMR ws.
+        ['/api', '/events'].reduce(
+          (a, p) => ((a[p] = { target: 'http://127.0.0.1:8321', ws: p === '/api' }), a),
+          {}
+        ),
   },
 })

@@ -197,6 +197,7 @@ function librarySummary(library, apps) {
 function createMockState() {
   return {
     barHost: '10.0.4.20',
+    tokenSet: false,
     listenPort: 8321,
     barReachable: true,
     screenOwner: { applicationName: 'flightradar', slug: 'flightradar', since: nowMs() - 42_000 },
@@ -538,6 +539,9 @@ export function managerMockPlugin() {
           readJsonBody(req).then((body) => {
             if (body.barHost) state.barHost = body.barHost
             if (body.appsDirs) state.appsDirs = body.appsDirs
+            // Bar token: `""` clears it, any other string sets it. Never
+            // echoed back — state only carries `tokenSet`.
+            if (typeof body.token === 'string') state.tokenSet = body.token !== ''
             // Optional GitHub token (v3-aanvullingen): `""` clears it, any
             // other string sets it. Never echoed back — only `tokenSet`.
             if (typeof body.libraryToken === 'string') {
