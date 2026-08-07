@@ -48,6 +48,7 @@
 
       <main>
         <AppsSection v-if="activeTab === 'apps'" @edit-variation="openVariationEditor" @open-logs="openLogs" />
+        <ControllerSection v-else-if="activeTab === 'controller'" />
         <LibrarySection v-else-if="activeTab === 'library'" />
         <SettingsSection v-else-if="activeTab === 'settings'" />
       </main>
@@ -69,6 +70,7 @@ import { manager } from './composables/useManager'
 import { icons, batteryIcons } from './icons'
 import MirrorPanel from './components/MirrorPanel.vue'
 import AppsSection from './components/AppsSection.vue'
+import ControllerSection from './components/ControllerSection.vue'
 import LibrarySection from './components/LibrarySection.vue'
 import SettingsSection from './components/SettingsSection.vue'
 import VariationEditor from './components/VariationEditor.vue'
@@ -79,13 +81,14 @@ const year = new Date().getFullYear()
 // Firmware-format tab rail (replaces the old modal/popover navigation).
 const TAB_OPTIONS = [
   { value: 'apps', label: 'Apps', icon: icons.play },
+  { value: 'controller', label: 'Controller', icon: icons.gamepad },
   { value: 'library', label: 'Library', icon: icons.library },
   { value: 'settings', label: 'Settings', icon: icons.settingsOutline, activeIcon: icons.settings },
 ]
 const tabOptions = TAB_OPTIONS
 // URL-routed tabs via the History API (no vue-router), same approach as
-// busybar-emulator: /apps, /library and /settings each get their own path so
-// they're linkable and survive a refresh; `/` falls back to apps.
+// busybar-emulator: /apps, /controller, /library and /settings each get their
+// own path so they're linkable and survive a refresh; `/` falls back to apps.
 const TAB_VALUES = TAB_OPTIONS.map((t) => t.value)
 function tabFromUrl() {
   const p = location.pathname.replace(/^\//, '')
