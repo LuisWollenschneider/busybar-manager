@@ -30,5 +30,9 @@
     "repos": [
       { "repo": "maxswinkels/busybar-apps", "branch": "main" }
     ]
+  },
+  "schedule": {
+    "enabled": false,
+    "slots": []
   }
 }

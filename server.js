@@ -80,11 +80,93 @@ function defaultConfig() {
   return {
     listenPort: 8321, barMode: "local", barHost: "10.0.4.20", token: null,
     cloudToken: null, appsDirs: [], apps: {}, library: normalizeLibrary(undefined),
+    schedule: normalizeSchedule(undefined),
   };
 }
 
+/* -------------------------------- schedule -------------------------------- */
+// Weekly repeating timetable (docs/CONTRACT.md, "Schedule"): a slot pins one
+// app + variation to a [start, end) window on one or more weekdays, so
+// "Mon–Fri, 08:00–10:00" is a single slot rather than five. Days follow
+// Date#getDay (0 = Sunday). Slots never cross midnight — spanning it means two
+// slots — and no two slots may overlap on a day they share, so at most one app
+// is ever scheduled at a given moment.
+function isHHMM(s) {
+  return typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+}
+// "24:00" is accepted for `end` only, as "until the end of the day" — the
+// alternative ("23:59") would leave a dead minute every night.
+function isEndHHMM(s) {
+  return isHHMM(s) || s === "24:00";
+}
+function minutesOf(hhmm) {
+  const [h, m] = String(hhmm).split(":");
+  return Number(h) * 60 + Number(m);
+}
+// The weekdays two slots have in common — empty when they can never collide.
+function sharedDays(a, b) {
+  return a.days.filter((d) => b.days.includes(d));
+}
+function slotsOverlap(a, b) {
+  if (!sharedDays(a, b).length) return false;
+  return minutesOf(a.start) < minutesOf(b.end) && minutesOf(b.start) < minutesOf(a.end);
+}
+function findOverlap(slot, slots, ignoreId) {
+  return slots.find((s) => s.id !== ignoreId && slotsOverlap(slot, s)) || null;
+}
+function sortSlots(slots) {
+  return slots.sort((a, b) => minutesOf(a.start) - minutesOf(b.start) || a.days[0] - b.days[0]);
+}
+
+// Accepts `days: [1,2,3]` and, for configs written before multi-day slots
+// existed, a single `day: 1`. Returns a sorted, deduped array or null.
+function coerceDays(raw) {
+  const list = Array.isArray(raw.days) ? raw.days : raw.day !== undefined ? [raw.day] : null;
+  if (!Array.isArray(list) || !list.length) return null;
+  const days = [...new Set(list.map(Number))].sort((a, b) => a - b);
+  if (days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) return null;
+  return days;
+}
+
+// Shape-check a raw slot; returns null when it is unusable. Used both for
+// config loaded from disk and for API bodies (the API reports *why* via
+// validateSlotBody below, this one just drops junk).
+function coerceSlot(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const days = coerceDays(raw);
+  if (!days) return null;
+  if (!isHHMM(raw.start) || !isEndHHMM(raw.end)) return null;
+  if (minutesOf(raw.end) <= minutesOf(raw.start)) return null;
+  if (typeof raw.slug !== "string" || !raw.slug) return null;
+  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const variation = typeof raw.variation === "string" && raw.variation ? raw.variation : "default";
+  return { id, days, start: raw.start, end: raw.end, slug: raw.slug, variation };
+}
+
+function normalizeSchedule(rawSched) {
+  const s = rawSched && typeof rawSched === "object" ? rawSched : {};
+  const slots = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(s.slots) ? s.slots : []) {
+    const slot = coerceSlot(raw);
+    // A hand-edited config can contain duplicate ids or overlaps; keep the
+    // first of each rather than refusing to boot.
+    if (!slot || seen.has(slot.id) || findOverlap(slot, slots, null)) continue;
+    seen.add(slot.id);
+    slots.push(slot);
+  }
+  return { enabled: s.enabled === true, slots: sortSlots(slots) };
+}
+
+// Managed apps draw at a deliberately low priority so anything started by
+// hand outside the manager (which draws at whatever the app itself declares,
+// normally higher) takes the screen without a fight. `null` would mean "send
+// the app's own priority through untouched", which is exactly what we don't
+// want here — set an explicit override per variation instead.
+const DEFAULT_PRIORITY = 10;
+
 function defaultVariation() {
-  return { args: {}, env: {}, priority: null };
+  return { args: {}, env: {}, priority: DEFAULT_PRIORITY };
 }
 
 function defaultAppConfig() {
@@ -105,6 +187,7 @@ function normalizeConfig(raw) {
   if (!Array.isArray(cfg.appsDirs)) cfg.appsDirs = [];
   if (!cfg.apps || typeof cfg.apps !== "object") cfg.apps = {};
   cfg.library = normalizeLibrary(raw && raw.library);
+  cfg.schedule = normalizeSchedule(raw && raw.schedule);
   for (const slug of Object.keys(cfg.apps)) {
     const a = cfg.apps[slug] || {};
     if (typeof a.enabled !== "boolean") a.enabled = false;
@@ -116,7 +199,10 @@ function normalizeConfig(raw) {
       a.variations[name] = {
         args: v.args && typeof v.args === "object" ? v.args : {},
         env: v.env && typeof v.env === "object" ? v.env : {},
-        priority: typeof v.priority === "number" ? v.priority : null,
+        // A variation that never had an explicit priority is pinned to
+        // DEFAULT_PRIORITY on load (see the constant): "no override" is not a
+        // useful state for a managed app. An explicit number is left alone.
+        priority: typeof v.priority === "number" ? v.priority : DEFAULT_PRIORITY,
       };
     }
     if (typeof a.variation !== "string" || !a.variations[a.variation]) {
@@ -427,9 +513,27 @@ function getRuntime(slug) {
       applicationNames: new Set(),
       lastDraw: null,
       blocked: false,
+      // Set by the scheduler while a slot owns this app: the variation the
+      // process is actually started with, without touching the user's own
+      // selection in config (see "schedule engine").
+      variationOverride: null,
     };
   }
   return runtime[slug];
+}
+
+// The variation an app runs under right now: a scheduler override if a slot
+// owns the app, otherwise the user's own selection. Falls back to the plain
+// selection when the override names a variation that has since been deleted.
+function effectiveVariationName(slug) {
+  const appCfg = getAppConfigView(slug);
+  const override = getRuntime(slug).variationOverride;
+  if (override && appCfg.variations[override]) return override;
+  return appCfg.variation;
+}
+function effectiveVariation(slug) {
+  const appCfg = getAppConfigView(slug);
+  return appCfg.variations[effectiveVariationName(slug)] || appCfg.variations.default || defaultVariation();
 }
 
 function pushLog(slug, stream, line) {
@@ -551,8 +655,7 @@ async function startApp(slug) {
     }
   }
 
-  const appCfg = getAppConfigView(slug);
-  const variation = appCfg.variations[appCfg.variation] || appCfg.variations.default || defaultVariation();
+  const variation = effectiveVariation(slug);
   const argv = [entry.scriptPath, "--host", `127.0.0.1:${getListenPort()}`, ...buildArgv(variation.args)];
   const env = Object.assign({}, process.env, variation.env || {}, { PYTHONUNBUFFERED: "1" });
 
@@ -603,14 +706,22 @@ async function startApp(slug) {
   return true;
 }
 
+// An app is supposed to be running when the user enabled it *or* when a
+// schedule slot currently owns it — a scheduled app is deliberately not
+// marked `enabled` in config, so its window can end without rewriting the
+// user's own on/off choice.
+function shouldBeRunning(slug) {
+  return getAppConfigView(slug).enabled || scheduledSlug === slug;
+}
+
 function scheduleRestart(slug) {
-  if (!getAppConfigView(slug).enabled) return;
+  if (!shouldBeRunning(slug)) return;
   const rt = getRuntime(slug);
   clearTimeout(rt.restartTimer);
   const delay = rt.backoffMs;
   rt.restartTimer = setTimeout(() => {
     rt.restartTimer = null;
-    if (!getAppConfigView(slug).enabled) return;
+    if (!shouldBeRunning(slug)) return;
     startApp(slug);
   }, delay);
   rt.backoffMs = Math.min(rt.backoffMs * 2, 60000);
@@ -653,6 +764,89 @@ function stopApp(slug) {
 async function restartApp(slug) {
   await stopApp(slug);
   return startApp(slug);
+}
+
+/* ---------------------------- schedule engine ----------------------------- */
+// Ticks once every SCHEDULE_TICK_MS and whenever the schedule changes, and
+// only ever touches apps the schedule itself names: an app the user enabled
+// by hand keeps running alongside the scheduled one (contract: "the scheduler
+// manages its own apps only"). Local wall-clock time, recomputed every tick,
+// so DST shifts need no special handling.
+const SCHEDULE_TICK_MS = 15000;
+let scheduledSlotKey = null; // id|slug|variation of the slot being served, if any
+let scheduledSlotId = null; // slot currently being served, if any
+let scheduledSlug = null; // the app that slot started (scheduler-owned)
+let scheduleChain = Promise.resolve(); // serializes overlapping applySchedule() calls
+
+function activeSlotAt(date) {
+  if (!config.schedule.enabled) return null;
+  const day = date.getDay();
+  const mins = date.getHours() * 60 + date.getMinutes();
+  return config.schedule.slots.find((s) => s.days.includes(day) && mins >= minutesOf(s.start) && mins < minutesOf(s.end)) || null;
+}
+
+// Hand an app back after its slot ended: drop the override, then either stop
+// it (scheduler-only app — clear its frame off the bar, same as a manual
+// disable) or restart it under the user's own variation (the user had it
+// enabled too, so it stays up).
+async function releaseScheduledApp(slug) {
+  const rt = getRuntime(slug);
+  const hadOverride = rt.variationOverride !== null;
+  rt.variationOverride = null;
+  if (getAppConfigView(slug).enabled) {
+    if (hadOverride) await restartApp(slug);
+    return;
+  }
+  const names = rt.applicationNames.size ? Array.from(rt.applicationNames) : [slug];
+  await stopApp(slug);
+  for (const n of names) await sendDisplayClear(n);
+}
+
+async function doApplySchedule() {
+  const slot = activeSlotAt(new Date());
+  const wantId = slot ? slot.id : null;
+  const wantSlug = slot ? slot.slug : null;
+  const wantVariation = slot ? slot.variation : null;
+
+  // Keyed on the slot's contents, not just its id, so editing the app or
+  // variation of the slot that is running right now takes effect at once.
+  const wantKey = slot ? `${wantId}|${wantSlug}|${wantVariation}` : null;
+  if (wantKey === scheduledSlotKey) {
+    // Same slot as last tick. Nothing to switch; a crash inside the window is
+    // handled by the supervisor's own backoff restart (see shouldBeRunning).
+    return;
+  }
+
+  const prevSlug = scheduledSlug;
+  scheduledSlotKey = wantKey;
+  scheduledSlotId = wantId;
+  scheduledSlug = wantSlug;
+
+  if (prevSlug && prevSlug !== wantSlug) await releaseScheduledApp(prevSlug);
+
+  if (wantSlug) {
+    const rt = getRuntime(wantSlug);
+    const wasRunning = rt.status === "running" || rt.status === "starting";
+    // Compare against what it is *effectively* running under, so a slot that
+    // asks for the variation the user already had selected costs no restart.
+    const variationChanged = effectiveVariationName(wantSlug) !== wantVariation;
+    rt.variationOverride = wantVariation;
+    if (!getAppConfigView(wantSlug).variations[wantVariation]) {
+      pushLog(wantSlug, "out", `[schedule] variation "${wantVariation}" no longer exists; using "${getAppConfigView(wantSlug).variation}"`);
+    }
+    // Back-to-back slots for the same app only need a restart when the
+    // variation actually differs.
+    if (wasRunning && variationChanged) await restartApp(wantSlug);
+    else if (!wasRunning) await startApp(wantSlug);
+  }
+  scheduleStateBroadcast();
+}
+
+// Public entry point: never runs two passes concurrently (a tick can land
+// while an API-triggered pass is still stopping a process).
+function applySchedule() {
+  scheduleChain = scheduleChain.then(doApplySchedule).catch((e) => log("schedule tick failed:", e.message));
+  return scheduleChain;
 }
 
 /* ---------------------------- draw attribution ---------------------------- */
@@ -850,8 +1044,7 @@ async function handleDraw(req, res, body) {
     if (appName) {
       slug = attributeSlug(appName);
       if (slug) {
-        const appCfg = getAppConfigView(slug);
-        const variation = appCfg.variations[appCfg.variation];
+        const variation = effectiveVariation(slug);
         if (variation && variation.priority != null) payload.priority = variation.priority;
       }
     }
@@ -1586,7 +1779,7 @@ function buildState() {
       slug: e.slug, name: e.name, description: e.description, tags: e.tags, dir: e.dir,
       options: e.options, enabled: appCfg.enabled, status: rt.status, pid: rt.pid,
       blocked: rt.blocked, lastDraw: rt.lastDraw, variation: appCfg.variation,
-      variations: appCfg.variations, missing: false,
+      scheduledVariation: rt.variationOverride, variations: appCfg.variations, missing: false,
       source: e.source || null, updateAvailable: e.source === "library" ? computeUpdateAvailable(e.slug) : false,
     });
   }
@@ -1597,8 +1790,8 @@ function buildState() {
     apps.push({
       slug, name: slug, description: "", tags: [], dir: null, options: [],
       enabled: appCfg.enabled, status: rt.status, pid: rt.pid, blocked: rt.blocked,
-      lastDraw: rt.lastDraw, variation: appCfg.variation, variations: appCfg.variations,
-      missing: true, source: null, updateAvailable: false,
+      lastDraw: rt.lastDraw, variation: appCfg.variation, scheduledVariation: rt.variationOverride,
+      variations: appCfg.variations, missing: true, source: null, updateAvailable: false,
     });
   }
   return {
@@ -1611,6 +1804,15 @@ function buildState() {
     screenOwner: currentScreenOwner(),
     apps,
     library: { lastCheck: libraryOverallLastCheck(), updatesAvailable: libraryUpdatesAvailableCount(), error: libraryFirstError() },
+    schedule: schedulePayload(),
+  };
+}
+
+function schedulePayload() {
+  return {
+    enabled: config.schedule.enabled,
+    slots: config.schedule.slots,
+    activeSlotId: scheduledSlotId,
   };
 }
 
@@ -1701,7 +1903,9 @@ function apiPutVariation(slug, name, body, res) {
   if (!name) return sendJSON(res, 400, { error: "variation name required" });
   const args = body && typeof body.args === "object" && body.args !== null ? body.args : {};
   const env = body && typeof body.env === "object" && body.env !== null ? body.env : {};
-  let priority = null;
+  // Omitting priority (or sending null) means "the manager's default", not
+  // "pass the app's own priority through" — see DEFAULT_PRIORITY.
+  let priority = DEFAULT_PRIORITY;
   if (body && body.priority !== undefined && body.priority !== null) {
     priority = Number(body.priority);
     if (!Number.isFinite(priority) || priority < 1 || priority > 100) {
@@ -1727,6 +1931,80 @@ async function apiDeleteVariation(slug, name, res) {
     if (rt.status === "running" || rt.status === "starting") await restartApp(slug);
   }
   persist();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+/* ------------------------------ schedule API ------------------------------ */
+
+// Full validation with a reason, for the API. Returns { slot } or { error }.
+// `id` is preserved for an update and minted for a create.
+function validateSlotBody(body, id) {
+  if (!body || typeof body !== "object") return { error: "body must be an object" };
+  const days = coerceDays(body);
+  if (!days) return { error: "days must be a non-empty array of integers 0-6 (0 = Sunday)" };
+  if (!isHHMM(body.start)) return { error: 'start must be "HH:MM"' };
+  if (!isEndHHMM(body.end)) return { error: 'end must be "HH:MM" (or "24:00")' };
+  if (minutesOf(body.end) <= minutesOf(body.start)) return { error: "end must be later than start" };
+  if (typeof body.slug !== "string" || !body.slug) return { error: "slug required" };
+  if (!findEntry(body.slug) && !config.apps[body.slug]) return { error: `unknown app: ${body.slug}`, status: 404 };
+  const variation = typeof body.variation === "string" && body.variation ? body.variation : "default";
+  const appCfg = getAppConfigView(body.slug);
+  if (!appCfg.variations[variation]) return { error: `unknown variation: ${variation}`, status: 404 };
+  return { slot: { id: id || crypto.randomUUID(), days, start: body.start, end: body.end, slug: body.slug, variation } };
+}
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function overlapError(slot, clash) {
+  const days = sharedDays(slot, clash).map((d) => DAY_NAMES[d]).join(", ");
+  return `overlaps the ${clash.start}–${clash.end} slot for ${clash.slug} on ${days}`;
+}
+
+async function apiSetSchedule(body, res) {
+  if (body && body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") return sendJSON(res, 400, { error: "enabled must be a boolean" });
+    config.schedule.enabled = body.enabled;
+    persist();
+    await applySchedule();
+  }
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+async function apiCreateSlot(body, res) {
+  const v = validateSlotBody(body, null);
+  if (v.error) return sendJSON(res, v.status || 400, { error: v.error });
+  const clash = findOverlap(v.slot, config.schedule.slots, null);
+  if (clash) return sendJSON(res, 409, { error: overlapError(v.slot, clash) });
+  config.schedule.slots.push(v.slot);
+  sortSlots(config.schedule.slots);
+  persist();
+  await applySchedule();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+async function apiUpdateSlot(id, body, res) {
+  const i = config.schedule.slots.findIndex((s) => s.id === id);
+  if (i === -1) return sendJSON(res, 404, { error: `unknown slot: ${id}` });
+  const v = validateSlotBody(body, id);
+  if (v.error) return sendJSON(res, v.status || 400, { error: v.error });
+  const clash = findOverlap(v.slot, config.schedule.slots, id);
+  if (clash) return sendJSON(res, 409, { error: overlapError(v.slot, clash) });
+  config.schedule.slots[i] = v.slot;
+  sortSlots(config.schedule.slots);
+  persist();
+  await applySchedule();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+async function apiDeleteSlot(id, res) {
+  const i = config.schedule.slots.findIndex((s) => s.id === id);
+  if (i === -1) return sendJSON(res, 404, { error: `unknown slot: ${id}` });
+  config.schedule.slots.splice(i, 1);
+  persist();
+  await applySchedule();
   scheduleStateBroadcast();
   sendJSON(res, 200, buildState());
 }
@@ -1931,6 +2209,15 @@ async function handleManagerApi(req, res, p, method, u) {
       const body = await readJsonBody(req);
       return apiSettings(body, res);
     }
+    if (p === "/api/_manager/schedule" && method === "GET") return sendJSON(res, 200, schedulePayload());
+    if (p === "/api/_manager/schedule" && method === "PUT") {
+      const body = await readJsonBody(req);
+      return apiSetSchedule(body, res);
+    }
+    if (p === "/api/_manager/schedule/slots" && method === "POST") {
+      const body = await readJsonBody(req);
+      return apiCreateSlot(body, res);
+    }
     if (p === "/api/_manager/library" && method === "GET") return apiLibraryGet(u.searchParams, res);
     if (p === "/api/_manager/library/check" && method === "POST") return apiLibraryCheck(res);
     if (p === "/api/_manager/library/install" && method === "POST") {
@@ -1955,6 +2242,13 @@ async function handleManagerApi(req, res, p, method, u) {
     }
     if (p === "/api/_manager/library/upload" && method === "POST") return handleLibraryUpload(req, res, u);
     let m;
+    if ((m = p.match(/^\/api\/_manager\/schedule\/slots\/([^/]+)$/)) && method === "PUT") {
+      const body = await readJsonBody(req);
+      return apiUpdateSlot(decodeURIComponent(m[1]), body, res);
+    }
+    if ((m = p.match(/^\/api\/_manager\/schedule\/slots\/([^/]+)$/)) && method === "DELETE") {
+      return apiDeleteSlot(decodeURIComponent(m[1]), res);
+    }
     if ((m = p.match(/^\/api\/_manager\/apps\/([^/]+)\/enable$/)) && method === "POST") return apiEnable(decodeURIComponent(m[1]), res);
     if ((m = p.match(/^\/api\/_manager\/apps\/([^/]+)\/disable$/)) && method === "POST") return apiDisable(decodeURIComponent(m[1]), res);
     if ((m = p.match(/^\/api\/_manager\/apps\/([^/]+)\/restart$/)) && method === "POST") return apiRestart(decodeURIComponent(m[1]), res);
@@ -2133,6 +2427,11 @@ async function main() {
   server.listen(port, bindHost, () => {
     log(`busybar-manager listening on ${bindHost}:${port} (bar=${barTargetLabel()}, appsDirs=${JSON.stringify(config.appsDirs)})`);
   });
+
+  // Weekly schedule: catch up on whatever slot is current right now (after a
+  // reboot mid-window the app must come up), then tick.
+  await applySchedule();
+  setInterval(applySchedule, SCHEDULE_TICK_MS).unref();
 
   checkBarReachable();
   setInterval(checkBarReachable, 10000).unref();

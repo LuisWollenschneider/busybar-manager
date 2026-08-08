@@ -53,7 +53,8 @@
       <div class="form-grid">
         <div class="field">
           <label for="priority">Priority override (1–100)</label>
-          <input id="priority" type="number" min="1" max="100" placeholder="app's own priority" v-model="priorityInput" />
+          <input id="priority" type="number" min="1" max="100" placeholder="10" v-model="priorityInput" />
+          <span class="hint">Managed apps default to 10 — low, so an app you start by hand can take the screen. Leave empty for 10.</span>
         </div>
         <div class="field">
           <label for="saveas">Save as</label>
