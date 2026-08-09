@@ -1760,6 +1760,25 @@ async function handleLibraryUpload(req, res, u) {
   sendJSON(res, 200, { slug });
 }
 
+// Zip-uploaded apps carry no repo/commit provenance, so per CONTRACT-LIBRARY.md
+// they must never show up in `catalog`. They're still library-managed installs
+// (stamp present => library/uninstall works), so they're surfaced in their own
+// list and the Library UI renders them as a separate group with a Remove button.
+function uploadedAppsPayload() {
+  const out = [];
+  for (const e of scanAppsLite()) {
+    if (e.source !== "upload") continue;
+    const stamp = readLibraryStamp(e.slug);
+    out.push({
+      slug: e.slug, name: e.name, description: e.description, tags: e.tags,
+      installedAt: (stamp && stamp.installedAt) || null,
+      source: "upload",
+    });
+  }
+  out.sort((a, b) => (b.installedAt || 0) - (a.installedAt || 0));
+  return out;
+}
+
 function publicLibraryPayload() {
   const localSlugs = new Set(scanAppsLite().filter((e) => e.source === "local").map((e) => e.slug));
   const catalog = aggregatedCatalog().map((c) => {
@@ -1781,6 +1800,7 @@ function publicLibraryPayload() {
     repos,
     checking: libraryChecking,
     catalog,
+    uploads: uploadedAppsPayload(),
     tokenSet: !!config.library.token,
   };
 }

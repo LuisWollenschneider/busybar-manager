@@ -41,13 +41,16 @@
       <template v-else>
         <!-- ================================ Apps subtab ================================ -->
         <template v-if="subTab === 'apps'">
-          <div v-if="checking && !library.catalog.length" class="lib-empty">Checking the library…</div>
-          <div v-else-if="!library.catalog.length && everChecked" class="lib-empty">No apps found in the library.</div>
-          <div v-else-if="!library.catalog.length && library.repos.some((r) => r.error)" class="lib-empty">
+          <!-- The catalog-empty states only take over when there's nothing at
+               all to show; zip-uploaded apps live under their own "My apps"
+               filter and must stay reachable even with no repos linked. -->
+          <div v-if="checking && !anyApps" class="lib-empty">Checking the library…</div>
+          <div v-else-if="!anyApps && everChecked" class="lib-empty">No apps found in the library.</div>
+          <div v-else-if="!anyApps && library.repos.some((r) => r.error)" class="lib-empty">
             Couldn't check the library — see settings for repo errors.
           </div>
-          <div v-else-if="!library.catalog.length && library.repos.length" class="lib-empty">Checking the library…</div>
-          <div v-else-if="!library.catalog.length" class="lib-empty">No repos linked yet — add one in settings.</div>
+          <div v-else-if="!anyApps && library.repos.length" class="lib-empty">Checking the library…</div>
+          <div v-else-if="!anyApps" class="lib-empty">No repos linked yet — add one in settings.</div>
           <template v-else>
             <div class="lib-toolbar">
               <div class="lib-search">
@@ -62,27 +65,50 @@
               </div>
               <div class="seg-tabs" role="tablist">
                 <button
+                  v-for="t in viewTabs"
+                  :key="t.key"
                   class="seg-tab"
-                  :class="{ active: !installedOnly }"
+                  :class="{ active: view === t.key }"
                   role="tab"
-                  :aria-selected="!installedOnly"
-                  @click="installedOnly = false"
-                >All</button>
-                <button
-                  class="seg-tab"
-                  :class="{ active: installedOnly }"
-                  role="tab"
-                  :aria-selected="installedOnly"
-                  @click="installedOnly = true"
-                >Installed</button>
+                  :aria-selected="view === t.key"
+                  @click="view = t.key"
+                >{{ t.label }}</button>
               </div>
             </div>
 
-            <div v-if="!filteredCatalog.length" class="lib-empty">
-              {{ installedOnly ? 'No installed apps match your search.' : 'No apps match your search.' }}
+            <div v-if="!shownUploads.length && !shownCatalog.length" class="lib-empty">
+              {{ emptyResultText }}
             </div>
             <div v-else class="lib-grid">
-            <div v-for="app in filteredCatalog" :key="app.repo + '@' + app.slug" class="lib-card">
+            <!-- Uploaded apps first: they're the user's own, and they're not in
+                 the catalog (no repo provenance), so they'd otherwise be buried
+                 under every repo app. -->
+            <div v-for="app in shownUploads" :key="uploadKey(app)" class="lib-card">
+              <div class="lib-preview">
+                <div class="lib-preview-fallback">{{ app.name }}</div>
+              </div>
+
+              <span class="lib-name">{{ app.name }}</span>
+              <span class="lib-card-repo">{{ app.installedAt ? `uploaded ${relTime(app.installedAt)}` : 'uploaded' }}</span>
+              <p class="lib-desc">{{ app.description || '—' }}</p>
+              <div class="lib-tags" v-if="app.tags && app.tags.length">
+                <span v-for="t in app.tags" :key="t" class="app-tag">{{ t }}</span>
+              </div>
+
+              <div class="lib-actions">
+                <span class="chip installed">installed</span>
+                <span class="spacer"></span>
+                <button
+                  class="pill sm danger"
+                  :disabled="rowBusy(uploadKey(app))"
+                  @click="onUninstall(app, uploadKey(app))"
+                  v-html="withLabel(icons.trashFill, uninstallLabel(uploadKey(app)))"
+                ></button>
+              </div>
+              <p v-if="rowState[uploadKey(app)]?.error" class="hint" style="color:var(--error)">{{ rowState[uploadKey(app)].error }}</p>
+            </div>
+
+            <div v-for="app in shownCatalog" :key="app.repo + '@' + app.slug" class="lib-card">
               <div class="lib-preview">
                 <img
                   v-if="app.previewUrl && !imgErrors[cardKey(app)]"
@@ -118,8 +144,8 @@
                   <button
                     class="pill sm danger"
                     :disabled="rowBusy(cardKey(app))"
-                    @click="onUninstall(app)"
-                    v-html="withLabel(icons.trashFill, rowState[cardKey(app)]?.confirm ? 'Sure?' : 'Remove')"
+                    @click="onUninstall(app, cardKey(app))"
+                    v-html="withLabel(icons.trashFill, uninstallLabel(cardKey(app)))"
                   ></button>
                 </template>
                 <template v-else>
@@ -287,15 +313,22 @@ function withLabel(svg, label) {
 
 const subTab = ref('apps') // 'apps' | 'settings'
 
-// Apps-view filters: free-text search + an "installed only" toggle. Both are
-// purely client-side over the already-fetched catalog.
+// Apps-view filters: free-text search + a three-way view. All client-side.
+// Uploaded apps show under 'all' and under 'installed' (they are installed,
+// they just have no repo behind them); 'mine' is the narrow view that hides
+// the repo catalog and leaves only them.
 const query = ref('')
-const installedOnly = ref(false)
+const view = ref('all') // 'all' | 'installed' | 'mine'
+const viewTabs = [
+  { key: 'all', label: 'All' },
+  { key: 'installed', label: 'Installed' },
+  { key: 'mine', label: 'My apps' },
+]
 
 const filteredCatalog = computed(() => {
   const q = query.value.trim().toLowerCase()
   return library.catalog.filter((app) => {
-    if (installedOnly.value && !app.installed) return false
+    if (view.value === 'installed' && !app.installed) return false
     if (!q) return true
     const haystack = [app.name, app.slug, app.repo, app.description, ...(app.tags || [])]
       .filter(Boolean)
@@ -304,6 +337,38 @@ const filteredCatalog = computed(() => {
     return haystack.includes(q)
   })
 })
+
+// Only the free-text search narrows "My apps" — they're all installed by
+// definition, so the All/Installed split doesn't apply to them.
+const filteredUploads = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  return (library.uploads || []).filter((app) => {
+    if (!q) return true
+    const haystack = [app.name, app.slug, app.description, ...(app.tags || [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(q)
+  })
+})
+
+// What the current view actually renders, in grid order (uploads first).
+const shownUploads = computed(() => filteredUploads.value)
+const shownCatalog = computed(() => (view.value === 'mine' ? [] : filteredCatalog.value))
+
+const emptyResultText = computed(() => {
+  if (view.value === 'mine') {
+    return query.value
+      ? 'No uploaded apps match your search.'
+      : 'No uploaded apps yet — upload a zip under Library settings.'
+  }
+  return view.value === 'installed' ? 'No installed apps match your search.' : 'No apps match your search.'
+})
+
+// Anything at all to show in the Apps subtab — gates the catalog-empty
+// messages so an uploads-only setup (no repos linked) still renders the
+// toolbar and the "My apps" tab.
+const anyApps = computed(() => library.catalog.length > 0 || (library.uploads?.length || 0) > 0)
 
 // A 404 on /api/_manager/library means an old, pre-multi-repo server binary
 // is still running (this has actually happened on Max's Mac) — show a fixed
@@ -321,8 +386,9 @@ const everChecked = ref(false)
 const headerSubtitle = computed(() => {
   if (incompatible.value) return ''
   if (subTab.value === 'settings') return `${library.repos.length} linked repo${library.repos.length === 1 ? '' : 's'}`
-  if (checking.value && !library.catalog.length) return 'Checking…'
-  return `${library.catalog.length} app${library.catalog.length === 1 ? '' : 's'} available`
+  if (checking.value && !anyApps.value) return 'Checking…'
+  const n = library.catalog.length + (library.uploads?.length || 0)
+  return `${n} app${n === 1 ? '' : 's'} available`
 })
 
 const imgLoaded = reactive({})
@@ -332,6 +398,16 @@ const repoState = reactive({}) // repo -> { busy, confirm, error }
 
 function cardKey(app) {
   return `${app.repo}@${app.slug}`
+}
+// Uploads have no repo, so they get their own key namespace — a repo app and
+// an uploaded app sharing a slug must not share row state.
+function uploadKey(app) {
+  return `upload@${app.slug}`
+}
+function uninstallLabel(key) {
+  const r = rowState[key]
+  if (r?.uninstalling) return 'Removing…'
+  return r?.confirm ? 'Sure?' : 'Remove'
 }
 
 function schedulePreviewFallbacks() {
@@ -442,8 +518,7 @@ async function onUpdate(app) {
   if (!res.ok) r.error = res.json?.error || `Update failed (${res.status})`
 }
 
-async function onUninstall(app) {
-  const key = cardKey(app)
+async function onUninstall(app, key = cardKey(app)) {
   const r = ensureRow(key)
   if (!r.confirm) {
     r.confirm = true
@@ -564,7 +639,7 @@ async function doUpload(file) {
   uploading.value = false
   if (res.ok) {
     uploadOk.value = true
-    uploadMessage.value = `${res.json.slug} installed — find it under Apps`
+    uploadMessage.value = `${res.json.slug} installed — find it under Apps → My apps`
   } else {
     uploadOk.value = false
     uploadMessage.value = res.json?.error || `Upload failed (${res.status})`

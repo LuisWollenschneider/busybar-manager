@@ -30,13 +30,15 @@ export const logs = reactive({}) // slug -> string[]
 // Shape matches GET /api/_manager/library exactly, v2 / multi-repo + v3
 // (docs/CONTRACT-LIBRARY.md "Config v2 — meerdere repos" / "v3-aanvullingen"):
 // { checkIntervalHours, repos: [{repo, branch, lastCheck, error}], checking,
-//   catalog, tokenSet }. The token itself is never sent to the frontend —
-// only whether one is set.
+//   catalog, uploads, tokenSet }. The token itself is never sent to the
+// frontend — only whether one is set. `uploads` lists zip-installed apps,
+// which have no repo provenance and so never appear in `catalog`.
 export const library = reactive({
   checkIntervalHours: 6,
   repos: [],
   checking: false,
   catalog: [],
+  uploads: [],
   tokenSet: false,
 })
 

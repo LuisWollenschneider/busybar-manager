@@ -71,6 +71,10 @@ const installedFrom = {
   clock: REPO_A,
 }
 
+// slug -> install timestamp for zip-uploaded apps, mirroring the stamp's
+// `installedAt`. Populated by the upload endpoint below.
+const uploadedAt = {}
+
 function createCatalog() {
   return [
     makeCatalogApp({
@@ -398,6 +402,18 @@ export function managerMockPlugin() {
       repos: library.repos,
       checking: library.checking,
       catalog: library.catalog,
+      // Zip-uploaded apps never enter the catalog (no repo provenance) — the
+      // server derives this list from the installed apps, so the mock does too.
+      uploads: state.apps
+        .filter((a) => a.source === 'upload')
+        .map((a) => ({
+          slug: a.slug,
+          name: a.name,
+          description: a.description,
+          tags: a.tags || [],
+          installedAt: uploadedAt[a.slug] || null,
+          source: 'upload',
+        })),
       tokenSet: !!library.token,
     }
   }
@@ -825,6 +841,15 @@ export function managerMockPlugin() {
 
         if (p === '/api/_manager/library/uninstall' && req.method === 'POST') {
           readJsonBody(req).then((body) => {
+            // Uploaded apps have no catalog entry but do carry a stamp, so the
+            // server allows uninstalling them too — mirror that here.
+            const uploaded = state.apps.find((a) => a.slug === body.slug && a.source === 'upload')
+            if (uploaded) {
+              delete uploadedAt[body.slug]
+              state.apps = state.apps.filter((a) => a.slug !== body.slug)
+              broadcastState()
+              return sendJson(res, 200, { ok: true })
+            }
             const repo = installedFrom[body.slug]
             const entry = library.catalog.find((c) => c.slug === body.slug && c.repo === repo && c.installed)
             if (!entry) return sendJson(res, 404, { error: `app '${body.slug}' is not a library-installed app` })
@@ -921,6 +946,7 @@ export function managerMockPlugin() {
                 updateAvailable: false,
               })
             )
+            uploadedAt[slug] = nowMs()
             broadcastState()
             sendJson(res, 200, { slug })
           })
