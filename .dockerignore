@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+web/node_modules
+web/dist
+logs
+apps
+docker
+test
+docs
+scripts
+launchd
+config.json
+*.log
+.DS_Store

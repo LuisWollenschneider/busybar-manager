@@ -118,6 +118,28 @@ tail -f logs/manager.log logs/manager.err.log   # view logs
 ./scripts/uninstall.sh                           # remove the LaunchAgent (project files stay)
 ```
 
+## Docker
+
+```bash
+docker compose up -d          # build + start, dashboard on http://127.0.0.1:8321
+docker compose logs -f        # follow the manager log (it logs to stdout)
+docker compose down           # stop
+```
+
+The image is `node:22-slim` plus `python3`/`python3-venv`/`python3-pip`, since every community app gets its own `.venv` created at start. The dashboard is built from `web/src` in a first build stage — the checked-out `web/dist` is not copied in, because a `web/dist` built from a newer frontend calls endpoints (`/api/_manager/schedule`, `/api/input`) that this `server.js` does not serve, which leaves buttons doing nothing. Two host directories are mounted:
+
+| Host | Container | Holds |
+| --- | --- | --- |
+| `./docker/data` | `/data` | `config.json` (path set via `BUSYBAR_MANAGER_CONFIG`) |
+| `./docker/apps` | `/app/apps` | apps installed from the library/uploads, plus their `.venv`s |
+
+`config.json` is mounted as a *directory*, not a single file: the manager saves it with a tmp-file + `rename`, which fails against a bind-mounted file. Seed it by copying `config.example.json` to `docker/data/config.json` — a missing file just boots the defaults.
+
+Two things differ from a bare-metal run:
+
+- `BUSYBAR_BIND_HOST=0.0.0.0` is set in the compose file. The default `127.0.0.1` bind is unreachable from a published port. The port itself is published to host loopback only (`127.0.0.1:8321:8321`); change it to `8321:8321` to expose the dashboard on the LAN.
+- In `local` bar mode, `barHost` must be an IP or DNS name the container can resolve. Docker's bridge network reaches the LAN fine, but it does not do mDNS — a `*.local` bar hostname needs the IP instead, or `network_mode: host`.
+
 ## The API
 
 Everything under `/api/*` that isn't `/api/_manager/*` is forwarded 1:1 to the bar. The manager's own endpoints live under `/api/_manager/`:
@@ -222,6 +244,7 @@ A zero-dependency end-to-end suite against a mock BUSY Bar + mock GitHub, coveri
 - **Node.js ≥ 22**
 - **python3**
 - **macOS** for autostart (the LaunchAgent is macOS-specific; the server itself is cross-platform)
+- …or **Docker** — the compose setup ships both runtimes, see [Docker](#docker)
 - A **BUSY Bar** over USB-ethernet (default `10.0.4.20`) or Wi-Fi — or the [emulator](https://github.com/maxswinkels/busybar-emulator)
 
 ## Related projects
