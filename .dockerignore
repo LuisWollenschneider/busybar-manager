@@ -11,5 +11,6 @@ docs
 scripts
 launchd
 config.json
+.env
 *.log
 .DS_Store

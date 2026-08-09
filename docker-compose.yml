@@ -5,9 +5,11 @@ services:
     container_name: busybar-manager
     restart: unless-stopped
     ports:
-      # Host-loopback only, same posture as the launchd install. Change to
-      # "8321:8321" to expose the dashboard on the LAN.
-      - "127.0.0.1:8321:8321"
+      # Defaults to host-loopback only, same posture as the launchd install.
+      # Set BUSYBAR_PUBLISH_HOST=0.0.0.0 (e.g. in .env) to expose the dashboard
+      # on the LAN — it has no authentication, so only do that on a trusted
+      # network.
+      - "${BUSYBAR_PUBLISH_HOST:-127.0.0.1}:${BUSYBAR_PUBLISH_PORT:-8321}:8321"
     environment:
       # Loopback inside the container is unreachable from a published port.
       BUSYBAR_BIND_HOST: "0.0.0.0"
