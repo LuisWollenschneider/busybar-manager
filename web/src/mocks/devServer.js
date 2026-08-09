@@ -26,7 +26,10 @@ function makeApp(overrides) {
     blocked: false,
     lastDraw: null,
     variation: 'default',
-    variations: { default: { args: {}, env: {}, priority: null } },
+    // Non-null only while a schedule slot owns the app: the variation it is
+    // actually running under (docs/CONTRACT.md, "Schedule").
+    scheduledVariation: null,
+    variations: { default: { args: {}, env: {}, priority: 10 } },
     missing: false,
     source: null, // "library" | "local" | null — see docs/CONTRACT-LIBRARY.md
     updateAvailable: false,
@@ -198,6 +201,44 @@ function librarySummary(library, apps) {
   return { lastCheck, updatesAvailable, error }
 }
 
+// Weekly timetable (docs/CONTRACT.md, "Schedule"). One slot is made to cover
+// *now*, so the dev UI shows the running/active state without waiting for a
+// particular hour; the fixed slots fill the calendar out, including a
+// multi-day weekday block. Any fixed day that collides with the "now" slot is
+// dropped from it, since two overlapping slots can never exist in a real
+// config.
+function createMockSchedule() {
+  const now = new Date()
+  const today = now.getDay()
+  const startH = now.getHours()
+  const pad = (n) => String(n).padStart(2, '0')
+  const fixed = [
+    { id: 'slot-week', days: [1, 2, 3, 4, 5], start: '07:30', end: '09:00', slug: 'clock', variation: 'default' },
+    { id: 'slot-wed', days: [3], start: '12:00', end: '13:00', slug: 'weather', variation: 'default' },
+    { id: 'slot-weekend', days: [0, 6], start: '20:00', end: '24:00', slug: 'weather', variation: 'default' },
+  ]
+  const nowSlot = {
+    id: 'slot-now',
+    days: [today],
+    start: `${pad(startH)}:00`,
+    end: startH + 2 >= 24 ? '24:00' : `${pad(startH + 2)}:00`,
+    slug: 'flightradar',
+    variation: 'night',
+  }
+  const collides = (s) =>
+    s.start < nowSlot.end && nowSlot.start < s.end
+  return {
+    enabled: true,
+    slots: [
+      nowSlot,
+      ...fixed
+        .map((s) => (collides(s) ? { ...s, days: s.days.filter((d) => d !== today) } : s))
+        .filter((s) => s.days.length),
+    ],
+    activeSlotId: 'slot-now',
+  }
+}
+
 function createMockState() {
   return {
     barMode: 'local',
@@ -220,8 +261,10 @@ function createMockState() {
         source: 'library',
         updateAvailable: true,
         variation: 'default',
+        // Driven by the mock schedule's "slot-now" (see createMockSchedule).
+        scheduledVariation: 'night',
         variations: {
-          default: { args: { '--radius': '15' }, env: {}, priority: null },
+          default: { args: { '--radius': '15' }, env: {}, priority: 10 },
           night: { args: { '--radius': '15', '--dim': 'true' }, env: {}, priority: 30 },
         },
         options: [
@@ -243,7 +286,7 @@ function createMockState() {
         source: 'library',
         updateAvailable: false,
         variation: 'default',
-        variations: { default: { args: {}, env: {}, priority: null } },
+        variations: { default: { args: {}, env: {}, priority: 10 } },
         options: [
           { flag: '--host', type: 'str', default: '10.0.4.20', choices: null, help: 'BUSY Bar host (managed by the manager)' },
           { flag: '--format', type: 'str', default: '24h', choices: ['24h', '12h'], help: 'Time format' },
@@ -262,7 +305,7 @@ function createMockState() {
         source: 'local',
         updateAvailable: false,
         variation: 'default',
-        variations: { default: { args: { '--city': 'Amsterdam' }, env: {}, priority: null } },
+        variations: { default: { args: { '--city': 'Amsterdam' }, env: {}, priority: 10 } },
         options: [
           { flag: '--host', type: 'str', default: '10.0.4.20', choices: null, help: 'BUSY Bar host (managed by the manager)' },
           { flag: '--city', type: 'str', default: 'Amsterdam', choices: null, help: 'City for the weather forecast' },
@@ -270,6 +313,7 @@ function createMockState() {
         ],
       }),
     ],
+    schedule: createMockSchedule(),
   }
 }
 
@@ -387,6 +431,67 @@ export function managerMockPlugin() {
     return state.apps.find((a) => a.slug === slug)
   }
 
+  /* -------------------------------- schedule ------------------------------- */
+  // Same validation the real server does (docs/CONTRACT.md, "Schedule"), so
+  // the 400/404/409 paths in the UI can be exercised against the mock.
+  const isHHMM = (s) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
+  const isEndHHMM = (s) => isHHMM(s) || s === '24:00'
+  const minutesOf = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5))
+
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+  function validateSlot(body, id) {
+    const list = Array.isArray(body.days) ? body.days : body.day !== undefined ? [body.day] : null
+    const days = list && list.length ? [...new Set(list.map(Number))].sort((a, b) => a - b) : null
+    if (!days || days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) {
+      return { error: 'days must be a non-empty array of integers 0-6 (0 = Sunday)' }
+    }
+    if (!isHHMM(body.start)) return { error: 'start must be "HH:MM"' }
+    if (!isEndHHMM(body.end)) return { error: 'end must be "HH:MM" (or "24:00")' }
+    if (minutesOf(body.end) <= minutesOf(body.start)) return { error: 'end must be later than start' }
+    const app = findApp(body.slug)
+    if (!app) return { error: `unknown app: ${body.slug}`, status: 404 }
+    const variation = body.variation || 'default'
+    if (!app.variations[variation]) return { error: `unknown variation: ${variation}`, status: 404 }
+    const slot = { id: id || `slot-${Math.random().toString(36).slice(2, 10)}`, days, start: body.start, end: body.end, slug: body.slug, variation }
+    const clash = state.schedule.slots.find(
+      (s) =>
+        s.id !== id &&
+        s.days.some((d) => slot.days.includes(d)) &&
+        minutesOf(s.start) < minutesOf(slot.end) &&
+        minutesOf(slot.start) < minutesOf(s.end)
+    )
+    if (clash) {
+      const shared = clash.days.filter((d) => slot.days.includes(d)).map((d) => DAY_NAMES[d]).join(', ')
+      return { error: `overlaps the ${clash.start}–${clash.end} slot for ${clash.slug} on ${shared}`, status: 409 }
+    }
+    return { slot }
+  }
+
+  // Re-derives what the scheduler would be running right now: which slot is
+  // active, and the variation override on the app it owns.
+  function applyMockSchedule() {
+    const now = new Date()
+    const mins = now.getHours() * 60 + now.getMinutes()
+    const active = state.schedule.enabled
+      ? state.schedule.slots.find((s) => s.days.includes(now.getDay()) && mins >= minutesOf(s.start) && mins < minutesOf(s.end))
+      : null
+    state.schedule.activeSlotId = active ? active.id : null
+    state.schedule.slots.sort((a, b) => minutesOf(a.start) - minutesOf(b.start) || a.days[0] - b.days[0])
+    for (const app of state.apps) {
+      const owned = active && active.slug === app.slug
+      app.scheduledVariation = owned ? active.variation : null
+      // A scheduled app runs without the user's own `enabled` being set.
+      if (owned && app.status === 'stopped') {
+        app.status = 'running'
+        app.pid = 5000 + Math.floor(Math.random() * 1000)
+      } else if (!owned && !app.enabled && app.status === 'running') {
+        app.status = 'stopped'
+        app.pid = null
+      }
+    }
+  }
+
   function readJsonBody(req) {
     return new Promise((resolve) => {
       let body = ''
@@ -456,6 +561,54 @@ export function managerMockPlugin() {
 
         if (p === '/api/_manager/health' && req.method === 'GET') {
           return sendJson(res, 200, { ok: true })
+        }
+
+        if (p === '/api/_manager/schedule' && req.method === 'GET') {
+          return sendJson(res, 200, state.schedule)
+        }
+
+        if (p === '/api/_manager/schedule' && req.method === 'PUT') {
+          readJsonBody(req).then((body) => {
+            if (typeof body.enabled === 'boolean') state.schedule.enabled = body.enabled
+            applyMockSchedule()
+            broadcastState()
+            sendJson(res, 200, state)
+          })
+          return
+        }
+
+        if (p === '/api/_manager/schedule/slots' && req.method === 'POST') {
+          readJsonBody(req).then((body) => {
+            const v = validateSlot(body, null)
+            if (v.error) return sendJson(res, v.status || 400, { error: v.error })
+            state.schedule.slots.push(v.slot)
+            applyMockSchedule()
+            broadcastState()
+            sendJson(res, 200, state)
+          })
+          return
+        }
+
+        const slotMatch = p.match(/^\/api\/_manager\/schedule\/slots\/([^/]+)$/)
+        if (slotMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+          const id = decodeURIComponent(slotMatch[1])
+          const i = state.schedule.slots.findIndex((s) => s.id === id)
+          if (i === -1) return sendJson(res, 404, { error: `unknown slot: ${id}` })
+          if (req.method === 'DELETE') {
+            state.schedule.slots.splice(i, 1)
+            applyMockSchedule()
+            broadcastState()
+            return sendJson(res, 200, state)
+          }
+          readJsonBody(req).then((body) => {
+            const v = validateSlot(body, id)
+            if (v.error) return sendJson(res, v.status || 400, { error: v.error })
+            state.schedule.slots[i] = v.slot
+            applyMockSchedule()
+            broadcastState()
+            sendJson(res, 200, state)
+          })
+          return
         }
 
         if (p === '/api/screen' && req.method === 'GET') {

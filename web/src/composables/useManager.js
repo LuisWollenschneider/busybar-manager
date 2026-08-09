@@ -14,6 +14,11 @@ export const manager = reactive({
   appsDirs: [],
   connected: false, // SSE connection to the manager itself
   library: { lastCheck: null, updatesAvailable: 0, error: null }, // summary, see docs/CONTRACT-LIBRARY.md
+  // Weekly timetable (docs/CONTRACT.md, "Schedule"). Slots are
+  // { id, days: [0-6] (0 = Sunday), start "HH:MM", end "HH:MM"|"24:00", slug,
+  // variation } — one slot can cover several weekdays — and never overlap on a
+  // day they share; activeSlotId is the one being served right now.
+  schedule: { enabled: false, slots: [], activeSlotId: null },
 })
 
 // Per-app log line buffers, appended to live via SSE `log` events and
@@ -135,6 +140,27 @@ export async function updateSettings(patch) {
 export const INPUT_KEYS = ['up', 'down', 'ok', 'back', 'start', 'busy', 'custom', 'off', 'apps', 'settings']
 export async function sendInput(key) {
   return apiJson('POST', `/api/input?key=${encodeURIComponent(key)}`)
+}
+/* -------------------------------- schedule --------------------------------- */
+
+// All four write straight back into `manager` via applyState: every schedule
+// endpoint answers with the full state payload, so the UI is up to date before
+// the SSE `state` event lands.
+function applyIfOk(r) {
+  if (r.ok && r.json && r.json.schedule) applyState(r.json)
+  return r
+}
+export async function setScheduleEnabled(enabled) {
+  return applyIfOk(await apiJson('PUT', '/api/_manager/schedule', { enabled }))
+}
+export async function createSlot(slot) {
+  return applyIfOk(await apiJson('POST', '/api/_manager/schedule/slots', slot))
+}
+export async function updateSlot(id, slot) {
+  return applyIfOk(await apiJson('PUT', `/api/_manager/schedule/slots/${encodeURIComponent(id)}`, slot))
+}
+export async function deleteSlot(id) {
+  return applyIfOk(await apiJson('DELETE', `/api/_manager/schedule/slots/${encodeURIComponent(id)}`))
 }
 
 /* ------------------------------ app library -------------------------------- */
