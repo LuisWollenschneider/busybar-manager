@@ -11,6 +11,10 @@ services:
       # network.
       - "${BUSYBAR_PUBLISH_HOST:-127.0.0.1}:${BUSYBAR_PUBLISH_PORT:-8321}:8321"
     environment:
+      # Container timezone. The image is UTC by default, which makes clock-style
+      # apps draw the wrong hour and makes schedule slots fire at UTC wall time.
+      # Set TZ (e.g. in .env) to an IANA zone such as Europe/Berlin.
+      TZ: "${TZ:-UTC}"
       # Loopback inside the container is unreachable from a published port.
       BUSYBAR_BIND_HOST: "0.0.0.0"
       # config.json is rewritten via tmp-file + rename, which fails on a

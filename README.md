@@ -149,8 +149,9 @@ The image is `node:22-slim` plus `python3`/`python3-venv`/`python3-pip`, since e
 
 `config.json` is mounted as a *directory*, not a single file: the manager saves it with a tmp-file + `rename`, which fails against a bind-mounted file. Seed it by copying `config.example.json` to `docker/data/config.json` — a missing file just boots the defaults.
 
-Two things differ from a bare-metal run:
+Three things differ from a bare-metal run:
 
+- The container runs in UTC, not the host's timezone, so apps that render local time draw the wrong hour and schedule slots match against UTC wall time. Set `TZ` to an IANA zone (`TZ=Europe/Berlin` in `.env`) and `docker compose up -d`; the zone handles DST, so don't hardcode an offset. Running apps pick it up on their next restart.
 - `BUSYBAR_BIND_HOST=0.0.0.0` is set in the compose file. The default `127.0.0.1` bind is unreachable from a published port. The port itself is published to host loopback only (`127.0.0.1:8321:8321`); change it to `8321:8321` to expose the dashboard on the LAN.
 - In `local` bar mode, `barHost` must be an IP or DNS name the container can resolve. Docker's bridge network reaches the LAN fine, but it does not do mDNS — a `*.local` bar hostname needs the IP instead, or `network_mode: host`.
 
