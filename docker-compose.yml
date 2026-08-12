@@ -1,0 +1,31 @@
+services:
+  busybar-manager:
+    build: .
+    image: busybar-manager:local
+    container_name: busybar-manager
+    restart: unless-stopped
+    ports:
+      # Defaults to host-loopback only, same posture as the launchd install.
+      # Set BUSYBAR_PUBLISH_HOST=0.0.0.0 (e.g. in .env) to expose the dashboard
+      # on the LAN — it has no authentication, so only do that on a trusted
+      # network.
+      - "${BUSYBAR_PUBLISH_HOST:-127.0.0.1}:${BUSYBAR_PUBLISH_PORT:-8321}:8321"
+    environment:
+      # Loopback inside the container is unreachable from a published port.
+      BUSYBAR_BIND_HOST: "0.0.0.0"
+      # config.json is rewritten via tmp-file + rename, which fails on a
+      # bind-mounted *file* — mount the directory instead.
+      BUSYBAR_MANAGER_CONFIG: /data/config.json
+    volumes:
+      - ./docker/data:/data
+      - ./docker/apps:/app/apps
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get({host:'127.0.0.1',port:8321,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
