@@ -21,6 +21,17 @@
       <div class="h-center">BUSY Bar Manager</div>
       <div class="h-right">
         <span v-if="battery.ok" class="batt"><span class="bico" :class="[{ live: manager.barReachable }, batteryTier]"><span class="bframe" v-html="batteryIcon"></span><span v-if="batteryCharging" class="bbolt" v-html="batteryLightning"></span></span>{{ battery.charge }}%</span>
+        <!-- Run/pause the weekly schedule from anywhere, not just its own tab.
+             State comes back over SSE, so a failed request simply leaves the
+             button showing what the manager actually has. -->
+        <button
+          class="icon-btn sched-btn"
+          :class="scheduleState"
+          :title="scheduleTitle"
+          :disabled="scheduleBusy"
+          @click="toggleSchedule"
+          v-html="scheduleIcon"
+        ></button>
         <button class="icon-btn" title="Toggle theme" @click="toggleTheme" v-html="themeIcon"></button>
       </div>
     </header>
@@ -48,6 +59,7 @@
 
       <main>
         <AppsSection v-if="activeTab === 'apps'" @edit-variation="openVariationEditor" @open-logs="openLogs" />
+        <ScheduleSection v-else-if="activeTab === 'schedule'" />
         <ControllerSection v-else-if="activeTab === 'controller'" />
         <LibrarySection v-else-if="activeTab === 'library'" />
         <SettingsSection v-else-if="activeTab === 'settings'" />
@@ -66,11 +78,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { manager } from './composables/useManager'
+import { manager, setScheduleEnabled } from './composables/useManager'
 import { icons, batteryIcons } from './icons'
 import MirrorPanel from './components/MirrorPanel.vue'
 import AppsSection from './components/AppsSection.vue'
 import ControllerSection from './components/ControllerSection.vue'
+import ScheduleSection from './components/ScheduleSection.vue'
 import LibrarySection from './components/LibrarySection.vue'
 import SettingsSection from './components/SettingsSection.vue'
 import VariationEditor from './components/VariationEditor.vue'
@@ -81,6 +94,7 @@ const year = new Date().getFullYear()
 // Firmware-format tab rail (replaces the old modal/popover navigation).
 const TAB_OPTIONS = [
   { value: 'apps', label: 'Apps', icon: icons.play },
+  { value: 'schedule', label: 'Schedule', icon: icons.clock, activeIcon: icons.clockFill },
   { value: 'controller', label: 'Controller', icon: icons.gamepad },
   { value: 'library', label: 'Library', icon: icons.library },
   { value: 'settings', label: 'Settings', icon: icons.settingsOutline, activeIcon: icons.settings },
@@ -121,6 +135,40 @@ const configWarning = computed(() => {
   if (!host || host === USB_HOST || host.startsWith(`${USB_HOST}:`)) return ''
   return manager.tokenSet ? '' : 'Bar token required'
 })
+
+// Header schedule switch. Four states, each with its own tint:
+//   off     grey   — paused, nothing scheduled starts or stops
+//   empty   yellow — running, but there is not a single slot to run
+//   idle    blue   — running, just nothing in this moment's window
+//   running green  — running, and a slot owns an app right now
+const scheduleBusy = ref(false)
+const scheduleEnabled = computed(() => !!manager.schedule?.enabled)
+const scheduleState = computed(() => {
+  const s = manager.schedule
+  if (!s || !s.enabled) return 'off'
+  if (!s.slots || !s.slots.length) return 'empty'
+  return s.activeSlotId ? 'running' : 'idle'
+})
+const scheduleIcon = computed(() => (scheduleEnabled.value ? icons.clockFill : icons.clock))
+const scheduleTitle = computed(() => {
+  const s = manager.schedule
+  const count = s?.slots?.length || 0
+  const slots = `${count} slot${count === 1 ? '' : 's'}`
+  if (scheduleState.value === 'off') return `Schedule paused (${slots}) — click to run`
+  if (scheduleState.value === 'empty') return 'Schedule running, but nothing is scheduled — click to pause'
+  if (scheduleState.value === 'idle') return `Schedule running (${slots}), nothing on right now — click to pause`
+  const slot = s.slots.find((x) => x.id === s.activeSlotId)
+  const app = manager.apps.find((a) => a.slug === slot?.slug)
+  return `Schedule running ${app?.name || slot?.slug || 'an app'} until ${slot?.end} — click to pause`
+})
+async function toggleSchedule() {
+  scheduleBusy.value = true
+  try {
+    await setScheduleEnabled(!scheduleEnabled.value)
+  } finally {
+    scheduleBusy.value = false
+  }
+}
 
 const variationSlug = ref(null)
 const logsSlug = ref(null)

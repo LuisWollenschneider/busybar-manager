@@ -58,11 +58,24 @@ Open **http://127.0.0.1:8321**, install apps from the **Library** tab (pulled fr
 The Vue 3 dashboard is served by `server.js` itself (no separate web server) and has four tabs, each on its own URL:
 
 - **Apps** (`/apps`) — every discovered app with an on/off switch, a variation picker, restart, live logs, and a badge showing who owns the screen.
+- **Schedule** (`/schedule`) — a weekly repeating timetable: pin an app + variation to a time window on a weekday.
 - **Controller** (`/controller`) — press the bar's buttons remotely over `POST /api/input`: the main **Start** button, the state keys (busy, custom, off, apps, settings) and the up/ok/down/back navigation pad.
 - **Library** (`/library`) — browse the community catalog with previews; install, update or remove apps, or upload a zipped one.
 - **Settings** (`/settings`) — the bar host (real bar or emulator) and any local dev folders.
 
 The header shows a live **connection** indicator and the bar's **battery** state, and the device preview mirrors the real 72×16 LEDs frame-by-frame.
+
+## Schedule
+
+The **Schedule** tab runs a weekly repeating timetable, drawn as a week calendar: hours down the side, seven day columns, each slot a block at its own time so the same window across several days lines up. Click empty space to add a slot there, or a block to edit it.
+
+A slot pins one app and one of its variations to a `[start, end)` window on **one or more weekdays** — "Mon–Fri 08:00–10:00" is one slot, not five. Slots never overlap on a day they share, so at most one scheduled app runs at a time, and a gap simply means nothing is scheduled then.
+
+- The **master switch** pauses the whole timetable without deleting anything.
+- The scheduler **only manages the apps its own slots name**. An app you switched on yourself on the Apps tab keeps running alongside, and a slot ending never touches it.
+- A scheduled run does **not** flip the app's own on/off switch, and the slot's variation is applied as a runtime override — your own selection on the Apps tab stays as you left it. While a slot owns an app, its row shows a `SCHEDULED · <variation>` chip.
+- When a slot ends the app is stopped and its frame is cleared off the bar, unless you also have it enabled — then it just goes back to your own variation.
+- Times are local, slots never cross midnight (use two slots), and `end` may be `24:00` for "until the end of the day". A manager restart mid-window brings the app straight back up.
 
 ## App library
 

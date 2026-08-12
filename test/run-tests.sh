@@ -7,3 +7,4 @@ node test/e2e.test.js
 node test/library.e2e.test.js
 node test/library-v3.e2e.test.js
 node test/bar-passthrough.test.js
+node test/schedule.test.js

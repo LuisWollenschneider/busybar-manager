@@ -5,6 +5,11 @@
         <span class="status-dot" :class="statusClass" :title="statusLabel"></span>
         <span class="app-name" :title="app.name">{{ app.name }}</span>
         <span v-if="isOwner" class="chip owner">SCREEN</span>
+        <span
+          v-if="app.scheduledVariation"
+          class="chip scheduled"
+          :title="`A schedule slot is running this app on the &quot;${app.scheduledVariation}&quot; variation`"
+        >SCHEDULED · {{ app.scheduledVariation }}</span>
         <span v-if="app.blocked" class="chip blocked">409</span>
         <span v-if="app.missing" class="chip missing">folder missing</span>
         <span v-if="app.updateAvailable" class="chip update">update available</span>

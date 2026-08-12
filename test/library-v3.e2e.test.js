@@ -383,6 +383,12 @@ async function main() {
 
   const libPayload = (await fetchJson(`${M}/api/_manager/library`)).body;
   assert.ok(!libPayload.catalog.some((c) => c.slug === UPLOAD_SLUG), "upload-installed apps must never appear in the library catalog");
+  // ...but they are listed separately so the Library UI can show + uninstall them.
+  const uploadEntry = libPayload.uploads.find((u) => u.slug === UPLOAD_SLUG);
+  assert.ok(uploadEntry, "upload-installed apps must be listed in library.uploads");
+  assert.equal(uploadEntry.source, "upload");
+  assert.equal(uploadEntry.name, "Zip Test App");
+  assert.ok(uploadEntry.installedAt > 0, "uploads entry should carry the stamp's installedAt");
 
   log("uploading the same slug again -> 409 (collision)");
   r = await fetchJson(`${M}/api/_manager/library/upload?slug=${UPLOAD_SLUG}`, {
@@ -410,6 +416,8 @@ async function main() {
   assert.ok(!fs.existsSync(path.join(APPS_DIR, UPLOAD_SLUG)), "uploaded app dir should be removed");
   state = (await fetchJson(`${M}/api/_manager/state`)).body;
   assert.ok(!state.apps.some((a) => a.slug === UPLOAD_SLUG), "uninstalled uploaded app should be gone from state");
+  const afterUninstall = (await fetchJson(`${M}/api/_manager/library`)).body;
+  assert.ok(!afterUninstall.uploads.some((u) => u.slug === UPLOAD_SLUG), "uninstalled uploaded app should be gone from library.uploads");
 
   log("malicious zip with a path-traversal entry -> 400, nothing installed");
   const maliciousZip = makeZip([
