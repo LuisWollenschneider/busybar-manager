@@ -125,6 +125,18 @@ export async function updateSettings(patch) {
   return r
 }
 
+/* ---------------------------- remote control ------------------------------- */
+
+// Single key press on the bar (openapi.yaml: POST /api/input?key=…). Goes out
+// over the manager's generic /api/* bar-proxy, so it picks up the configured
+// credential and works in both `local` and `cloud` mode. Fire-and-forget: the
+// bar acknowledges the event but never reports which state it ended up in, so
+// there is nothing to fold back into `manager`.
+export const INPUT_KEYS = ['up', 'down', 'ok', 'back', 'start', 'busy', 'custom', 'off', 'apps', 'settings']
+export async function sendInput(key) {
+  return apiJson('POST', `/api/input?key=${encodeURIComponent(key)}`)
+}
+
 /* ------------------------------ app library -------------------------------- */
 
 // Note: r.status === 404 here means an old (pre-multi-repo) server binary is

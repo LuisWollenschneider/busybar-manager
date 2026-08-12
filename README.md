@@ -55,9 +55,10 @@ Open **http://127.0.0.1:8321**, install apps from the **Library** tab (pulled fr
 
 ## Dashboard
 
-The Vue 3 dashboard is served by `server.js` itself (no separate web server) and has three tabs, each on its own URL:
+The Vue 3 dashboard is served by `server.js` itself (no separate web server) and has four tabs, each on its own URL:
 
 - **Apps** (`/apps`) — every discovered app with an on/off switch, a variation picker, restart, live logs, and a badge showing who owns the screen.
+- **Controller** (`/controller`) — press the bar's buttons remotely over `POST /api/input`: the main **Start** button, the state keys (busy, custom, off, apps, settings) and the up/ok/down/back navigation pad.
 - **Library** (`/library`) — browse the community catalog with previews; install, update or remove apps, or upload a zipped one.
 - **Settings** (`/settings`) — the bar host (real bar or emulator) and any local dev folders.
 
@@ -215,7 +216,7 @@ Settings live in `config.json` (atomic writes; changes from the dashboard persis
 npm test
 ```
 
-A zero-dependency end-to-end suite against a mock BUSY Bar + mock GitHub, covering app scanning and the supervisor, proxy behavior and priority/409 attribution, state persistence across restarts, variation switching and crash recovery, the library flow (ETag caching, token handling, install/update/uninstall, zip upload with path-traversal rejection), and the bar passthrough.
+A zero-dependency end-to-end suite against a mock BUSY Bar + mock GitHub, covering app scanning and the supervisor, proxy behavior and priority/409 attribution, state persistence across restarts, variation switching and crash recovery, the library flow (ETag caching, token handling, install/update/uninstall, zip upload with path-traversal rejection), the bar passthrough, and the remote-control key presses behind the Controller tab.
 
 ## Requirements
 

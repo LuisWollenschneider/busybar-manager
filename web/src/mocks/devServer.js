@@ -34,6 +34,10 @@ function makeApp(overrides) {
   }
 }
 
+// The firmware's `key` enum for POST /api/input (openapi.yaml), mirrored here
+// so the mock rejects the same keys the real bar would.
+const INPUT_KEYS = ['up', 'down', 'ok', 'back', 'start', 'busy', 'custom', 'off', 'apps', 'settings']
+
 const REPO_A = 'maxswinkels/busybar-apps'
 const REPO_B = 'pixelfriends/busybar-community' // fake third-party repo, for the dev mock only
 const RAW_BASE_A = `https://raw.githubusercontent.com/${REPO_A}/main/apps`
@@ -564,6 +568,15 @@ export function managerMockPlugin() {
         // dev mock fakes a plausible reading here instead.
         if (p === '/api/status' && req.method === 'GET') {
           return sendJson(res, 200, { power: { state: 'discharging', battery_charge: 63 } })
+        }
+
+        // Remote control (Controller tab): proxied 1:1 to the bar in
+        // production; here it just validates the key against the firmware's
+        // enum (openapi.yaml POST /api/input) and acknowledges it.
+        if (p === '/api/input' && req.method === 'POST') {
+          const key = url.searchParams.get('key')
+          if (!INPUT_KEYS.includes(key)) return sendJson(res, 400, { error: `invalid key: ${key}` })
+          return sendJson(res, 200, { result: 'OK' })
         }
 
         /* --------------------------- app library v2 (mock) ------------------------- */
