@@ -226,7 +226,15 @@ function parseYamlSubset(text) {
 // and auto-discover their argparse options by parsing `--help` output.
 
 const ARG_SKIP = new Set(["-h", "--help", "--host", "--token", "--test"]);
-const optionsCache = {}; // scriptPath -> { mtime, options }
+const optionsCache = {}; // scriptPath -> { key, options }
+
+// Path the per-app venv interpreter would live at (see ensureVenv). May not exist.
+function venvPythonPath(dir) {
+  const venvDir = path.join(dir, ".venv");
+  return process.platform === "win32"
+    ? path.join(venvDir, "Scripts", "python.exe")
+    : path.join(venvDir, "bin", "python3");
+}
 
 function discoverOptions(scriptPath) {
   let mtime;
@@ -235,16 +243,30 @@ function discoverOptions(scriptPath) {
   } catch (_) {
     return [];
   }
+  // `--help` requires all imports to run, which requires the venv to be set up,
+  // and the venv python interpreter to be used, instead of the global one.
+  // Else the `--help` run will crash, leaving the arguments undiscovered.
+  const venvPy = venvPythonPath(path.dirname(scriptPath));
+  let venvMtime = 0;
+  try {
+    venvMtime = fs.statSync(venvPy).mtimeMs;
+  } catch (_) {}
+  const python = venvMtime ? venvPy : PYTHON;
+  // Keyed on the venv too, so a venv built after a failed scan re-discovers.
+  const key = `${mtime}:${venvMtime}`;
   const hit = optionsCache[scriptPath];
-  if (hit && hit.mtime === mtime) return hit.options;
+  if (hit && hit.key === key) return hit.options;
   let options = [];
   try {
     if (fs.readFileSync(scriptPath, "utf8").includes("argparse")) {
-      const r = spawnSync(PYTHON, [scriptPath, "--help"], { timeout: 3000, encoding: "utf8" });
+      const r = spawnSync(python, [scriptPath, "--help"], { timeout: 3000, encoding: "utf8" });
       if (r.status === 0 && r.stdout) options = parseHelpOptions(r.stdout);
+      else log(`option discovery failed for ${scriptPath}:`, (r.stderr || "").trim().split("\n").pop() || `exit ${r.status}`);
     }
-  } catch (_) {}
-  optionsCache[scriptPath] = { mtime, options };
+  } catch (e) {
+    log(`option discovery errored for ${scriptPath}:`, e.message);
+  }
+  optionsCache[scriptPath] = { key, options };
   return options;
 }
 
@@ -473,9 +495,7 @@ function runChild(cmd, args, slug) {
 // busybar-emulator/server.js.
 async function ensureVenv(entry, slug) {
   const venvDir = path.join(entry.dir, ".venv");
-  const pyBinPath = process.platform === "win32"
-    ? path.join(venvDir, "Scripts", "python.exe")
-    : path.join(venvDir, "bin", "python3");
+  const pyBinPath = venvPythonPath(entry.dir);
   const reqFile = path.join(entry.dir, "requirements.txt");
   const stampFile = path.join(venvDir, ".req-sha256");
   const sha = crypto.createHash("sha256").update(fs.readFileSync(reqFile)).digest("hex");
