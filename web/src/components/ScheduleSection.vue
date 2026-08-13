@@ -58,7 +58,7 @@
               v-for="slot in slotsByDay[d.value]"
               :key="slot.id"
               class="cal-event"
-              :class="eventClass(slot)"
+              :class="eventClass(slot, d.value)"
               :style="eventStyle(slot)"
               :title="`${appName(slot.slug)} · ${formatDays(slot.days)} ${slot.start}–${slot.end}`"
               @click="openEdit(slot)"
@@ -99,7 +99,9 @@ const MIN_BLOCK_PX = Math.round(HOUR_PX * 0.75)
 // so this component only edits slots.
 const editing = ref(null)
 const calEl = ref(null)
-const todayIdx = new Date().getDay()
+// Reactive so the "today" column and the active-occurrence highlight follow the
+// clock over midnight instead of pinning to the day the tab was opened.
+const todayIdx = ref(new Date().getDay())
 
 // Drives the "now" line; a minute of granularity is all the calendar shows.
 const nowMinutes = ref(new Date().getHours() * 60 + new Date().getMinutes())
@@ -108,6 +110,7 @@ onMounted(() => {
   nowTimer = setInterval(() => {
     const d = new Date()
     nowMinutes.value = d.getHours() * 60 + d.getMinutes()
+    todayIdx.value = d.getDay()
   }, 30000)
   // 24 h of calendar is taller than the panel, so open it where the content
   // is: the earliest slot, or the current hour when there is nothing yet.
@@ -211,10 +214,13 @@ function eventStyle(slot) {
 // How much of the block's content fits is a question about its rendered
 // height, not its duration: an hour-long slot and a 15-minute one now come out
 // the same size.
-function eventClass(slot) {
+// A slot draws in every day it covers, but only one of those columns is the
+// occurrence that is running right now — highlighting the rest would claim the
+// app is live on days it is not.
+function eventClass(slot, day) {
   const px = eventHeight(slot)
   return {
-    active: slot.id === schedule.value.activeSlotId,
+    active: slot.id === schedule.value.activeSlotId && day === todayIdx.value,
     unknown: !appName(slot.slug, true),
     compact: px < 50,
     tiny: px < 36,
@@ -224,7 +230,7 @@ function eventClass(slot) {
 // First slot at or after "now" in the week, wrapping around — purely
 // informational, the server decides what actually runs.
 const nextLabel = computed(() => {
-  const nowKey = todayIdx * MINUTES_PER_DAY + nowMinutes.value
+  const nowKey = todayIdx.value * MINUTES_PER_DAY + nowMinutes.value
   const occurrences = []
   for (const slot of schedule.value.slots) {
     for (const day of slot.days) occurrences.push({ slot, day, key: day * MINUTES_PER_DAY + minutesOf(slot.start) })
