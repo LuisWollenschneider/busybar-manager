@@ -7,7 +7,6 @@
           <div class="sc-title-block">
             <div class="sc-title-row">
               <span class="sc-title">Schedule</span>
-              <span v-if="!schedule.enabled" class="status-chip">paused</span>
             </div>
             <!-- One live status line instead of a static blurb plus a separate
                  "now" paragraph: what the schedule is doing is the only thing
@@ -24,6 +23,13 @@
           </div>
         </div>
         <div class="sc-actions">
+          <label class="sc-switch" :class="{ on: schedule.enabled }" :title="schedule.enabled ? 'Pause the schedule' : 'Run the schedule'">
+            <span class="switch xs">
+              <input type="checkbox" :checked="schedule.enabled" :disabled="busy" @change="toggleEnabled" />
+              <span class="track"></span>
+            </span>
+            <span class="sc-switch-label">{{ schedule.enabled ? 'Running' : 'Paused' }}</span>
+          </label>
           <button class="pill sm brand" :disabled="!apps.length" @click="openNew()" v-html="withLabel(icons.plus, 'Add slot')"></button>
         </div>
       </div>
@@ -79,7 +85,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { manager } from '../composables/useManager'
+import { manager, setScheduleEnabled } from '../composables/useManager'
 import { icons } from '../icons'
 import { WEEK_DAYS, minutesOf, formatDays } from '../lib/week'
 import SlotEditor from './SlotEditor.vue'
@@ -95,9 +101,10 @@ const HOUR_PX = 52
 // block may claim before it would read as a longer window than it is.
 const MIN_BLOCK_PX = Math.round(HOUR_PX * 0.75)
 
-// The run/pause switch lives in the app header (it is useful from every tab),
-// so this component only edits slots.
+// The run/pause switch also lives in the app header (it is useful from every
+// tab); this one is the copy that sits with the slots it governs.
 const editing = ref(null)
+const busy = ref(false)
 const calEl = ref(null)
 // Reactive so the "today" column and the active-occurrence highlight follow the
 // clock over midnight instead of pinning to the day the tab was opened.
@@ -273,6 +280,17 @@ function addAt(day, event) {
   let hour = 0
   while (hour < 23 && offsets[hour + 1] <= event.offsetY) hour++
   openNew(day, hour)
+}
+
+async function toggleEnabled(event) {
+  const el = event.target
+  el.checked = schedule.value.enabled
+  busy.value = true
+  try {
+    await setScheduleEnabled(!schedule.value.enabled)
+  } finally {
+    busy.value = false
+  }
 }
 
 function openEdit(slot) {
