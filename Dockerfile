@@ -1,7 +1,3 @@
-# The frontend is built from web/src rather than copied from web/dist: the
-# checked-out web/dist is a newer upstream build that calls endpoints this
-# server.js does not implement (/api/_manager/schedule, /api/input), so serving
-# it gives a dashboard whose buttons hit 404s.
 FROM node:22-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
