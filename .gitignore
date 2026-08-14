@@ -17,3 +17,4 @@ config.json.corrupt-*
 config.json.pre-cleanup-*
 # Local Claude Code permission overrides
 .claude/settings.local.json
+docker/
