@@ -75,6 +75,18 @@ button{font-family:inherit}
 .icon-btn{cursor:pointer;border:none;background:var(--btn);color:var(--text);width:38px;height:38px;border-radius:999px;display:grid;place-items:center;transition:.15s;font-size:16px;line-height:1}
 .icon-btn:hover{background:var(--btn-hover)}
 .icon-btn svg{width:18px;height:18px}
+.icon-btn:disabled{opacity:.55;cursor:default}
+/* header schedule switch — one tint per state (see scheduleState in App.vue):
+   off = grey/paused, empty = nothing scheduled, idle = running but between
+   slots, running = a slot owns an app right now */
+.icon-btn.sched-btn{color:var(--muted)}
+.icon-btn.sched-btn:hover{color:var(--text)}
+.icon-btn.sched-btn.empty{color:var(--warn);background:color-mix(in srgb,var(--warn) 16%,transparent)}
+.icon-btn.sched-btn.empty:hover{background:color-mix(in srgb,var(--warn) 24%,transparent)}
+.icon-btn.sched-btn.idle{color:var(--brand);background:color-mix(in srgb,var(--brand) 16%,transparent)}
+.icon-btn.sched-btn.idle:hover{background:color-mix(in srgb,var(--brand) 24%,transparent)}
+.icon-btn.sched-btn.running{color:var(--success);background:color-mix(in srgb,var(--success) 16%,transparent)}
+.icon-btn.sched-btn.running:hover{background:color-mix(in srgb,var(--success) 24%,transparent)}
 
 /* device preview — firmware: image 310px, sm(640px+): 385px; wrapper py-6 (24px) */
 .preview{display:flex;flex-direction:column;align-items:center;padding:24px 0;position:relative}
@@ -124,7 +136,13 @@ main{display:flex;flex-direction:column;gap:16px;width:100%;max-width:688px;marg
 .sc-icon{width:56px;height:56px;border-radius:999px;background:var(--accent25);display:grid;place-items:center;flex:none}
 .sc-icon svg{width:28px;height:28px;color:var(--text)}
 .sc-title{font-size:20px;font-weight:400;line-height:1.3}
-.sc-subtitle{font-size:14px;color:var(--muted);margin-top:2px}
+.sc-title-block{min-width:0}
+.sc-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sc-subtitle{font-size:14px;color:var(--muted);margin-top:2px;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.sc-subtitle strong{font-weight:600;color:var(--text)}
+.sub-dim{color:var(--faint)}
+/* pulsing dot in front of the "now running" line, same idiom as .status-dot */
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--success);flex:none;align-self:center;animation:dot-pulse 1.8s ease-in-out infinite}
 .sc-actions{width:100%;display:flex;flex-direction:column;align-items:stretch;gap:8px}
 @media(min-width:640px){.sc-actions{width:auto;flex-direction:row;align-items:center}}
 
@@ -199,6 +217,8 @@ main{display:flex;flex-direction:column;gap:16px;width:100%;max-width:688px;marg
 .chip.update{background:var(--brand);color:#fff}
 .chip.local{background:var(--btn);color:var(--faint);font-weight:500;text-transform:none;letter-spacing:0}
 .chip.installed{background:color-mix(in srgb,var(--success) 16%,transparent);color:var(--success);font-weight:500;text-transform:none;letter-spacing:0}
+/* a schedule slot is driving this app right now (its variation override) */
+.chip.scheduled{background:color-mix(in srgb,var(--brand) 18%,transparent);color:var(--brand);font-family:var(--mono);font-weight:500;letter-spacing:0}
 .app-row-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .app-row-controls .spacer{flex:1}
 .app-meta{font-size:11px;color:var(--faint);font-family:var(--mono)}
@@ -221,8 +241,9 @@ main{display:flex;flex-direction:column;gap:16px;width:100%;max-width:688px;marg
 .field .hint,.hint{font-size:11.5px;color:var(--faint)}
 .hint a{color:var(--brand);text-decoration:none}
 .hint a:hover{text-decoration:underline}
-input[type=text],input[type=number],input[type=password],textarea{background:var(--btn);border:1px solid transparent;color:var(--text);border-radius:10px;padding:9px 12px;font-family:var(--font);font-size:13.5px;width:100%}
-input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,textarea:focus,select:focus{outline:none;box-shadow:0 0 0 2px var(--brand)}
+input[type=text],input[type=number],input[type=password],input[type=time],textarea{background:var(--btn);border:1px solid transparent;color:var(--text);border-radius:10px;padding:9px 12px;font-family:var(--font);font-size:13.5px;width:100%}
+input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,input[type=time]:focus,textarea:focus,select:focus{outline:none;box-shadow:0 0 0 2px var(--brand)}
+input[type=time]:disabled{opacity:.5}
 input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .check-row{display:flex;align-items:center;gap:9px;font-size:13.5px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
@@ -231,6 +252,54 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .kv-add{font-size:12.5px}
 .subhead{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:18px 0 10px;font-weight:600}
 .subhead:first-child{margin-top:0}
+
+/* schedule tab — a week calendar: hours down the left, seven day columns, and
+   each slot drawn as a block at its own time, so the same window on several
+   days lines up across the columns. Scrolls in both directions (24 h is taller
+   than the panel; seven columns are wider than a phone) with the hour gutter
+   and the day header pinned. */
+/* Row heights are not uniform: the minutes a short slot occupies are stretched
+   so its block clears MIN_BLOCK_PX, while the rest of that hour keeps its
+   normal scale (see `layout` in ScheduleSection.vue). So the grid's row track
+   and every hour cell are sized from JS, and the hour lines are real elements
+   rather than a repeating gradient. All seven columns are drawn against the
+   same scale, so days stay aligned. */
+.cal{--cal-line:color-mix(in srgb,var(--track) 45%,transparent);overflow:auto;max-height:min(62vh,620px);border-radius:12px;background:var(--row-bg);overscroll-behavior:contain}
+.cal.paused{opacity:.6}
+.cal-grid{display:grid;grid-template-columns:52px repeat(7,minmax(96px,1fr))}
+.cal-corner{position:sticky;top:0;left:0;z-index:4;background:var(--row-bg)}
+.cal-day-head{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 4px;background:var(--row-bg);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);box-shadow:inset 0 -1px 0 0 var(--cal-line)}
+.cal-day-head.today{color:var(--brand)}
+.cal-day-today{font-size:10px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--brand)}
+.cal-gutter{position:sticky;left:0;z-index:2;background:var(--row-bg)}
+.cal-hour{position:relative}
+/* the label sits astride its hour line, like a calendar's time axis */
+.cal-hour span{position:absolute;top:-7px;right:7px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.cal-day{position:relative;cursor:copy;box-shadow:inset 1px 0 0 0 var(--cal-line)}
+.cal-day.today{background:rgba(var(--amb),.06)}
+.cal-lines{position:absolute;inset:0;pointer-events:none}
+.cal-line{border-top:1px solid var(--cal-line)}
+.cal-line:first-child{border-top:none}
+.cal-event{position:absolute;left:3px;right:3px;overflow:hidden;cursor:pointer;border:none;text-align:left;display:flex;flex-direction:column;gap:1px;padding:5px 7px;border-radius:7px;background:var(--card);color:var(--text);font-family:var(--font);box-shadow:inset 0 0 0 1px var(--ring-out);transition:box-shadow .15s}
+.cal-event:hover{box-shadow:inset 0 0 0 1px var(--track);z-index:1}
+.cal-event.active{background:color-mix(in srgb,var(--brand) 14%,var(--card));box-shadow:inset 0 0 0 1px var(--brand),0 0 18px -8px rgba(var(--amb),.6)}
+.cal-event.unknown{opacity:.55}
+/* room for the app + its time, but not the variation line */
+.cal-event.compact .ev-var{display:none}
+/* one line only (a window too short for the row stretch to fully cover) */
+.cal-event.tiny{flex-direction:row;align-items:baseline;gap:6px;padding:3px 7px}
+.ev-app{font-size:12px;font-weight:600;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-time{font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap}
+.ev-var{font-family:var(--mono);font-size:10px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cal-now{position:absolute;left:0;right:0;height:0;border-top:1.5px solid var(--error);pointer-events:none;z-index:2}
+.cal-now i{position:absolute;left:-3px;top:-3.5px;width:7px;height:7px;border-radius:50%;background:var(--error)}
+
+/* day picker in the slot editor */
+.day-picker{display:flex;gap:6px;flex-wrap:wrap}
+.day-toggle{cursor:pointer;border:none;background:var(--btn);color:var(--muted);font-family:var(--font);font-size:12.5px;font-weight:500;padding:8px 0;width:46px;border-radius:9px;transition:.15s}
+.day-toggle:hover{background:var(--btn-hover);color:var(--text)}
+.day-toggle.on{background:var(--brand);color:#fff}
+.day-presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 
 /* settings tab section */
 .row-block{background:var(--row-bg);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}

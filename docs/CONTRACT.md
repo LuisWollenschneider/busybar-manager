@@ -54,7 +54,7 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
       "lastDraw": { "ts": 1730000000000, "status": 200 },
       "variation": "default",
       "variations": {
-        "default": { "args": {}, "env": {}, "priority": null }
+        "default": { "args": {}, "env": {}, "priority": 10 }
       }
     }
   ]
@@ -98,6 +98,40 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
 
 Errors: `{ "error": "…" }` with an appropriate 4xx/5xx.
 
+## Schedule
+
+A weekly repeating timetable. A **slot** pins one app + one of its variations to a `[start, end)` window on one or more weekdays, so "Mon–Fri 08:00–10:00" is a single slot rather than five:
+
+```json
+{ "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "slug": "clock", "variation": "night" }
+```
+
+- `days`: non-empty array of integers 0–6, **0 = Sunday** (same as JS `Date#getDay`), stored sorted and deduped. A single `day: 1` is accepted on input (and in configs written before multi-day slots) and normalized to `days: [1]`.
+- `start` / `end`: `"HH:MM"`, 24h, local time. `end` also accepts `"24:00"` ("until the end of the day"); `end` must be later than `start`, so a slot never crosses midnight — spanning it means two slots.
+- **No two slots may overlap on a day they share**, whatever app they name: at most one app is ever scheduled at any moment. Gaps are allowed, and in a gap the scheduler runs nothing.
+- `id` is server-minted (uuid) on create and preserved on update.
+
+State: `schedule: { "enabled": false, "slots": [ … ], "activeSlotId": null }` — `activeSlotId` is the slot being served right now (`null` when the schedule is off or the current moment falls in a gap).
+
+Endpoints (all of them, except the GET, answer with the full state payload):
+
+- `GET /api/_manager/schedule` → `{ enabled, slots, activeSlotId }`
+- `PUT /api/_manager/schedule` body `{ "enabled": true }` — the master switch (persist; applied immediately).
+- `POST /api/_manager/schedule/slots` body `{ days, start, end, slug, variation? }` — create. `400` on malformed days/times, `404` on an unknown app or variation, `409` on an overlap (the message names the clashing slot and the days they share). `variation` defaults to `"default"`.
+- `PUT /api/_manager/schedule/slots/:id` — same body and same errors; the slot being edited is excluded from the overlap check. `404` when the id is unknown.
+- `DELETE /api/_manager/schedule/slots/:id` — `404` when the id is unknown.
+
+Behavior:
+
+- The scheduler **only manages the apps its own slots name**. An app the user enabled by hand keeps running alongside the scheduled one and is never stopped by a slot starting or ending.
+- Starting a slot does **not** set `enabled` on the app: the run is runtime-only, so the window can end without rewriting the user's own on/off choice. The same goes for the variation — the slot's variation is applied as a runtime override, exposed per app in state as `scheduledVariation` (`null` when no slot owns the app), while `variation` keeps showing the user's own selection.
+- When a slot ends: if the user also has the app enabled it is restarted under their own variation, otherwise it is stopped and its frame is cleared off the bar (`DELETE /api/display/draw`, exactly like a manual disable).
+- Back-to-back slots for the same app only restart it when the variation differs.
+- A crash inside a window is restarted by the normal supervisor backoff.
+- The engine re-evaluates every 15 s (and immediately on any schedule change or at boot, so a manager restart mid-window brings the app back up). Local wall-clock time is re-read every tick, so DST shifts need no special handling.
+- Deleting a variation a slot refers to is allowed; the slot then falls back to the app's own selected variation and logs a line.
+- A hand-edited `config.json` containing overlapping slots, duplicate ids or malformed slots is not fatal: the offending entries are dropped on load and the rest is kept.
+
 ## SSE `GET /events`
 
 Same pattern as busybar-emulator. Events:
@@ -132,8 +166,14 @@ Source order: (1) firmware ws, (2) `/api/screen` polling (the real bar), (3) **e
     "clock": {
       "enabled": true,
       "variation": "default",
-      "variations": { "default": { "args": {}, "env": {}, "priority": null } }
+      "variations": { "default": { "args": {}, "env": {}, "priority": 10 } }
     }
+  },
+  "schedule": {
+    "enabled": false,
+    "slots": [
+      { "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "slug": "clock", "variation": "default" }
+    ]
   }
 }
 ```
