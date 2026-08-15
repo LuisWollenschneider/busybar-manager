@@ -46,7 +46,7 @@
         </div>
         <div class="field">
           <label for="slot-app">App</label>
-          <select id="slot-app" class="select" v-model="form.slug" @change="onAppChange">
+          <select id="slot-app" class="select" v-model="form.slug">
             <option v-for="a in apps" :key="a.slug" :value="a.slug">{{ a.name || a.slug }}</option>
           </select>
         </div>
@@ -79,7 +79,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { createSlot, updateSlot, deleteSlot } from '../composables/useManager'
 import { icons } from '../icons'
 import { WEEK_DAYS } from '../lib/week'
@@ -123,9 +123,13 @@ function toggleDay(day) {
   form.days.sort((a, b) => a - b)
 }
 
-function onAppChange() {
-  if (!variationNames.value.includes(form.variation)) form.variation = variationNames.value[0] || 'default'
-}
+watch(
+  variationNames,
+  (names) => {
+    if (!names.includes(form.variation)) form.variation = names[0] || 'default'
+  },
+  { immediate: true },
+)
 
 async function onSave() {
   const end = tillMidnight.value ? '24:00' : endInput.value
