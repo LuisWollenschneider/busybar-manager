@@ -14,8 +14,8 @@
             <div class="sc-subtitle">
               <template v-if="!schedule.enabled">Paused — slots stay saved, nothing starts or stops.</template>
               <template v-else-if="activeSlot">
-                <span class="live-dot"></span>Now <strong>{{ appName(activeSlot.slug) }}</strong>
-                <span class="sub-dim">· {{ activeSlot.variation }} · until {{ activeSlot.end }}</span>
+                <span class="live-dot"></span>Now <strong>{{ slotTitle(activeSlot) }}</strong>
+                <span class="sub-dim">· {{ slotSubtitle(activeSlot) }} · until {{ activeSlot.end }}</span>
               </template>
               <template v-else-if="schedule.slots.length">Idle · next {{ nextLabel }}</template>
               <template v-else>No slots yet — click anywhere in the calendar to add one.</template>
@@ -66,12 +66,12 @@
               class="cal-event"
               :class="eventClass(slot, d.value)"
               :style="eventStyle(slot)"
-              :title="`${appName(slot.slug)} · ${formatDays(slot.days)} ${slot.start}–${slot.end}`"
+              :title="`${slotTitle(slot)} · ${formatDays(slot.days)} ${slot.start}–${slot.end}`"
               @click="openEdit(slot)"
             >
-              <span class="ev-app">{{ appName(slot.slug) }}</span>
+              <span class="ev-app">{{ slotTitle(slot) }}</span>
               <span class="ev-time">{{ slot.start }}–{{ slot.end }}</span>
-              <span class="ev-var">{{ slot.variation }}</span>
+              <span class="ev-var">{{ slotSubtitle(slot) }}</span>
             </button>
             <div v-if="d.value === todayIdx" class="cal-now" :style="{ top: `${pxAt(nowMinutes)}px` }"><i></i></div>
           </div>
@@ -80,7 +80,7 @@
     </div>
   </section>
 
-  <SlotEditor v-if="editing" :slot-data="editing" :apps="apps" @close="editing = null" />
+  <SlotEditor v-if="editing" :slot-data="editing" :apps="apps" :scrollers="scrollers" @close="editing = null" />
 </template>
 
 <script setup>
@@ -131,6 +131,7 @@ onUnmounted(() => {
 
 const schedule = computed(() => manager.schedule || { enabled: false, slots: [], activeSlotId: null })
 const apps = computed(() => manager.apps || [])
+const scrollers = computed(() => manager.scrollers || [])
 const nowPct = computed(() => (nowMinutes.value / MINUTES_PER_DAY) * 100)
 
 // A slot renders in every day it covers, at the same height in each column —
@@ -228,7 +229,7 @@ function eventClass(slot, day) {
   const px = eventHeight(slot)
   return {
     active: slot.id === schedule.value.activeSlotId && day === todayIdx.value,
-    unknown: !appName(slot.slug, true),
+    unknown: !slotTitle(slot, true),
     compact: px < 50,
     tiny: px < 36,
   }
@@ -246,7 +247,7 @@ const nextLabel = computed(() => {
   const next = occurrences.find((o) => o.key > nowKey) || occurrences[0]
   if (!next) return ''
   const label = weekDays.find((d) => d.value === next.day)?.label || ''
-  return `${appName(next.slot.slug)} on ${label} at ${next.slot.start}`
+  return `${slotTitle(next.slot)} on ${label} at ${next.slot.start}`
 })
 
 // `strict` distinguishes "the app is gone" (used to grey the block out) from
@@ -255,6 +256,23 @@ function appName(slug, strict = false) {
   const app = apps.value.find((a) => a.slug === slug)
   if (!app || app.missing) return strict ? '' : slug
   return app.name || slug
+}
+
+// A slot names either one app + variation or a whole scroller; the block shows
+// the target on the first line and what it runs under on the third.
+function scrollerName(id, strict = false) {
+  const sc = scrollers.value.find((s) => s.id === id)
+  if (!sc) return strict ? '' : id
+  return sc.name
+}
+function slotTitle(slot, strict = false) {
+  return slot.kind === 'scroller' ? scrollerName(slot.scrollerId, strict) : appName(slot.slug, strict)
+}
+function slotSubtitle(slot) {
+  if (slot.kind !== 'scroller') return slot.variation
+  const sc = scrollers.value.find((s) => s.id === slot.scrollerId)
+  const count = sc ? sc.steps.length : 0
+  return `scroller · ${count} ${count === 1 ? 'app' : 'apps'}`
 }
 
 function withLabel(svg, label) {
@@ -268,8 +286,10 @@ function openNew(day, hour) {
     days: [day ?? todayIdx],
     start: `${String(start).padStart(2, '0')}:00`,
     end: start >= 23 ? '24:00' : `${String(start + 1).padStart(2, '0')}:00`,
+    kind: 'app',
     slug: apps.value[0]?.slug || '',
     variation: 'default',
+    scrollerId: scrollers.value[0]?.id || '',
   }
 }
 

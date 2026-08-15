@@ -10,6 +10,13 @@
         </div>
         <div class="sc-actions">
           <button
+            class="pill sm"
+            :disabled="!manager.apps.length"
+            title="A named cycle of apps, each on the bar for a few seconds"
+            @click="openNewScroller"
+            v-html="withLabel(icons.plus, 'Add Scroller')"
+          ></button>
+          <button
             v-if="cleanup.counts.removable"
             class="pill sm danger"
             :title="`${cleanup.counts.removable} stale or duplicate entries`"
@@ -24,6 +31,15 @@
     </div>
     <div class="sc-body">
       <CleanupPanel v-if="showCleanup" @close="showCleanup = false" />
+      <div v-if="manager.scrollers.length" class="apps-list scrollers-list">
+        <ScrollerCard
+          v-for="sc in manager.scrollers"
+          :key="sc.id"
+          :scroller="sc"
+          :apps="manager.apps"
+          @edit="editing = sc"
+        />
+      </div>
       <AppsGrid
         :apps="manager.apps"
         :screen-owner="manager.screenOwner"
@@ -32,6 +48,8 @@
       />
     </div>
   </section>
+
+  <ScrollerEditor v-if="editing" :scroller="editing" :apps="manager.apps" @close="editing = null" />
 </template>
 
 <script setup>
@@ -40,8 +58,15 @@ import { cleanup, manager } from '../composables/useManager'
 import { icons } from '../icons'
 import AppsGrid from './AppsGrid.vue'
 import CleanupPanel from './CleanupPanel.vue'
+import ScrollerCard from './ScrollerCard.vue'
+import ScrollerEditor from './ScrollerEditor.vue'
 
 defineEmits(['edit-variation', 'open-logs'])
+
+const editing = ref(null)
+function openNewScroller() {
+  editing.value = { id: null, name: '', baseDurationSec: 10, steps: [] }
+}
 
 const showCleanup = ref(false)
 // Close it once there is nothing left to clean (the badge disappears too).

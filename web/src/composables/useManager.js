@@ -14,10 +14,16 @@ export const manager = reactive({
   appsDirs: [],
   connected: false, // SSE connection to the manager itself
   library: { lastCheck: null, updatesAvailable: 0, error: null }, // summary, see docs/CONTRACT-LIBRARY.md
+  // Named cycles of apps (docs/CONTRACT.md, "Scrollers"):
+  // { id, name, enabled, baseDurationSec, steps: [{ id, slug, variation,
+  // durationSec|null }], running, scheduled, activeStepId, activeSlug } — a
+  // step without its own durationSec runs for baseDurationSec.
+  scrollers: [],
   // Weekly timetable (docs/CONTRACT.md, "Schedule"). Slots are
-  // { id, days: [0-6] (0 = Sunday), start "HH:MM", end "HH:MM"|"24:00", slug,
-  // variation } — one slot can cover several weekdays — and never overlap on a
-  // day they share; activeSlotId is the one being served right now.
+  // { id, days: [0-6] (0 = Sunday), start "HH:MM", end "HH:MM"|"24:00", kind }
+  // plus either slug + variation (kind "app") or scrollerId (kind "scroller")
+  // — one slot can cover several weekdays — and never overlap on a day they
+  // share; activeSlotId is the one being served right now.
   schedule: { enabled: false, slots: [], activeSlotId: null },
 })
 
@@ -225,6 +231,32 @@ export async function updateSlot(id, slot) {
 }
 export async function deleteSlot(id) {
   return applyIfOk(await apiJson('DELETE', `/api/_manager/schedule/slots/${encodeURIComponent(id)}`))
+}
+
+/* -------------------------------- scrollers -------------------------------- */
+
+// Same deal as the schedule calls: every scroller endpoint answers with the
+// full state payload, so the UI is up to date before the SSE frame lands.
+function applyStateIfOk(r) {
+  if (r.ok && r.json && Array.isArray(r.json.scrollers)) applyState(r.json)
+  return r
+}
+// `steps` is an ordered array — reordering is expressed by sending it in the
+// new order, and a PUT replaces the whole list.
+export async function createScroller(scroller) {
+  return applyStateIfOk(await apiJson('POST', '/api/_manager/scrollers', scroller))
+}
+export async function updateScroller(id, scroller) {
+  return applyStateIfOk(await apiJson('PUT', `/api/_manager/scrollers/${encodeURIComponent(id)}`, scroller))
+}
+// Also drops any schedule slot that named this scroller (server-side cascade).
+export async function deleteScroller(id) {
+  return applyStateIfOk(await apiJson('DELETE', `/api/_manager/scrollers/${encodeURIComponent(id)}`))
+}
+export async function setScrollerEnabled(id, enabled) {
+  return applyStateIfOk(
+    await apiJson('POST', `/api/_manager/scrollers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`)
+  )
 }
 
 /* ------------------------------ app library -------------------------------- */
