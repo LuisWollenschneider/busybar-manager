@@ -481,6 +481,72 @@ function parseHelpOptions(help) {
   return options;
 }
 
+// Discover an app's declared environment variables from its .env.example (or
+// similarly named) file to render a fixed field for each in the variation editor.
+const ENV_EXAMPLE_NAMES = [".env.example", "env.example", ".env.sample"];
+const envSpecCache = {}; // dir -> { key, spec }
+
+function discoverEnvSpec(dir) {
+  let filePath = null;
+  let mtime = 0;
+  for (const name of ENV_EXAMPLE_NAMES) {
+    const p = path.join(dir, name);
+    try {
+      mtime = fs.statSync(p).mtimeMs;
+      filePath = p;
+      break;
+    } catch (_) {}
+  }
+  if (!filePath) return [];
+  const key = `${filePath}:${mtime}`;
+  const hit = envSpecCache[dir];
+  if (hit && hit.key === key) return hit.spec;
+  let spec = [];
+  try {
+    spec = parseEnvExample(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    log(`env example read failed for ${filePath}:`, e.message);
+  }
+  envSpecCache[dir] = { key, spec };
+  return spec;
+}
+
+// `KEY=value` / `export KEY=value`, `#` comments. The comment block directly
+// above an entry becomes its help text
+function parseEnvExample(text) {
+  const out = [];
+  const seen = new Set();
+  let comment = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      comment = [];
+      continue;
+    }
+    if (line.startsWith("#")) {
+      comment.push(line.replace(/^#+\s?/, "").trim());
+      continue;
+    }
+    const m = line.match(/^(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*)$/);
+    if (!m) {
+      comment = [];
+      continue;
+    }
+    const [, key, rawValue] = m;
+    let example = rawValue.trim();
+    const quoted = example.match(/^(['"])([\s\S]*?)\1/);
+    // Unquoted values can carry a trailing `# note`; a quoted one ends at its
+    // closing quote and anything after it is a comment too.
+    example = quoted ? quoted[2] : example.replace(/[ \t]+#.*$/, "").trim();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ key, example: example || null, help: comment.join(" ") });
+    }
+    comment = [];
+  }
+  return out;
+}
+
 function describeFromDocstring(scriptPath, fallback) {
   try {
     const head = fs.readFileSync(scriptPath, "utf8").slice(0, 2048);
@@ -492,7 +558,10 @@ function describeFromDocstring(scriptPath, fallback) {
 
 // Lite entries (no argparse discovery — cheap, safe to call often for
 // supervisor/proxy bookkeeping). Options are attached separately for state.
-function makeLiteEntry(slug, dir, scriptPath, source) {
+// `ownsDir` is false for a flat `<appsDir>/<slug>.py` app: it shares its folder
+// with every other flat script there, so folder-level files (`.env.example`)
+// must not be read as if they belonged to it.
+function makeLiteEntry(slug, dir, scriptPath, source, ownsDir = true) {
   const manifestPath = path.join(dir, "manifest.yaml");
   let manifest = null;
   if (fs.existsSync(manifestPath)) {
@@ -510,6 +579,7 @@ function makeLiteEntry(slug, dir, scriptPath, source) {
     tags,
     dir,
     scriptPath,
+    ownsDir,
     hasRequirements: fs.existsSync(path.join(dir, "requirements.txt")),
     source, // "local" (appsDirs) | "library" (installed from a repo) | "upload" (zip-installed) | null
   };
@@ -527,6 +597,16 @@ function doScanLocal(appsDirs) {
     } catch (_) {
       continue;
     }
+    const ownScript = path.join(dir, "app.py");
+    const ownSlug = path.basename(dir);
+    if (fs.existsSync(ownScript) && isSafeSlug(ownSlug) && !ownSlug.startsWith("_")) {
+      const slug = ownSlug;
+      if (!seen.has(slug)) {
+        seen.add(slug);
+        out.push(makeLiteEntry(slug, dir, ownScript, "local"));
+      }
+      continue;
+    }
     for (const d of ents) {
       if (d.name.startsWith(".") || d.name.startsWith("_")) continue;
       if (d.isDirectory()) {
@@ -541,7 +621,7 @@ function doScanLocal(appsDirs) {
         const slug = d.name.slice(0, -3);
         if (seen.has(slug)) continue;
         seen.add(slug);
-        out.push(makeLiteEntry(slug, dir, path.join(dir, d.name), "local"));
+        out.push(makeLiteEntry(slug, dir, path.join(dir, d.name), "local", false));
       }
     }
   }
@@ -606,7 +686,12 @@ function scanAppsLite() {
   return entries;
 }
 function scanAppsFull() {
-  return scanAppsLite().map((e) => Object.assign({}, e, { options: discoverOptions(e.scriptPath) }));
+  return scanAppsLite().map((e) =>
+    Object.assign({}, e, {
+      options: discoverOptions(e.scriptPath),
+      envSpec: e.ownsDir ? discoverEnvSpec(e.dir) : [],
+    })
+  );
 }
 function findEntry(slug) {
   return scanAppsLite().find((e) => e.slug === slug) || null;
@@ -1692,7 +1777,10 @@ async function performRepoCheck(repo, branch) {
     if (!m) continue;
     const [, slug, file] = m;
     if (!bySlug[slug]) bySlug[slug] = { files: {}, previewFile: null };
-    if (file.startsWith(".") || file.startsWith("__pycache__")) continue;
+    // Dotfiles are repo cruft and stay out of the install set, except the
+    // env template: the dashboard needs it to know which env vars the app
+    // reads (see discoverEnvSpec).
+    if ((file.startsWith(".") && !ENV_EXAMPLE_NAMES.includes(file)) || file.startsWith("__pycache__")) continue;
     if (/^preview\./i.test(file)) {
       bySlug[slug].previewFile = file;
       continue;
@@ -2007,8 +2095,15 @@ function sanitizeSlug(raw) {
 
 // Runtime files + manifest.yaml are installed; dotfiles/__pycache__/.venv
 // (accidentally zipped-up local cruft) are skipped, mirroring library installs.
+// The one dotfile that is kept is the env template (see discoverEnvSpec) — as
+// a file, never as a directory name.
 function isInstallableZipEntry(relPath) {
-  return !relPath.split("/").some((part) => part.startsWith(".") || part === "__pycache__");
+  const parts = relPath.split("/");
+  return parts.every((part, i) => {
+    if (part === "__pycache__") return false;
+    if (!part.startsWith(".")) return true;
+    return i === parts.length - 1 && ENV_EXAMPLE_NAMES.includes(part);
+  });
 }
 
 function parseContentDispositionFilename(header) {
@@ -2332,7 +2427,7 @@ function buildState() {
     const rt = getRuntime(e.slug);
     apps.push({
       slug: e.slug, name: e.name, description: e.description, tags: e.tags, dir: e.dir,
-      options: e.options, enabled: appCfg.enabled, status: rt.status, pid: rt.pid,
+      options: e.options, envSpec: e.envSpec, enabled: appCfg.enabled, status: rt.status, pid: rt.pid,
       blocked: rt.blocked, lastDraw: rt.lastDraw, variation: appCfg.variation,
       scheduledVariation: claimedVariation(e.slug), runtimeOwner: runtimeOwnerPayload(e.slug),
       variations: appCfg.variations, missing: false,
@@ -2344,7 +2439,7 @@ function buildState() {
     const appCfg = getAppConfigView(slug);
     const rt = getRuntime(slug);
     apps.push({
-      slug, name: slug, description: "", tags: [], dir: null, options: [],
+      slug, name: slug, description: "", tags: [], dir: null, options: [], envSpec: [],
       enabled: appCfg.enabled, status: rt.status, pid: rt.pid, blocked: rt.blocked,
       lastDraw: rt.lastDraw, variation: appCfg.variation, scheduledVariation: claimedVariation(slug),
       runtimeOwner: runtimeOwnerPayload(slug),

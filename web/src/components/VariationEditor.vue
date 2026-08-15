@@ -42,6 +42,20 @@
       </div>
 
       <div class="subhead">Environment variables</div>
+      <div v-if="envFields.length" class="form-grid">
+        <div class="field" v-for="spec in envFields" :key="spec.key">
+          <label :for="'env-' + spec.key">{{ spec.key }}</label>
+          <input
+            :id="'env-' + spec.key"
+            type="text"
+            :placeholder="spec.example || 'value'"
+            v-model="envValues[spec.key]"
+          />
+          <span v-if="spec.help" class="hint">{{ spec.help }}</span>
+        </div>
+      </div>
+      <p v-if="envFields.length" class="hint">Discovered from this app's .env.example</p>
+
       <div v-for="(row, i) in envRows" :key="i" class="kv-row">
         <input type="text" placeholder="KEY" v-model="row.key" />
         <input type="text" placeholder="value" v-model="row.value" />
@@ -96,11 +110,15 @@ const busy = ref(false)
 const error = ref('')
 const editingName = ref(props.app.variation || 'default')
 const formArgs = reactive({})
+// Env vars the app declares in its .env.example get a fixed field (name not
+// editable); anything else stored on the variation stays a free KEY/value row.
+const envValues = reactive({})
 const envRows = ref([])
 const priorityInput = ref('')
 const saveAsName = ref(editingName.value)
 
 const optionFields = computed(() => (props.app.options || []).filter((o) => o.flag !== '--host'))
+const envFields = computed(() => props.app.envSpec || [])
 const variationNames = computed(() => Object.keys(props.app.variations || { default: {} }))
 
 function withLabel(svg, label) {
@@ -115,7 +133,15 @@ function loadFromVariation() {
     if (opt.type === 'bool') formArgs[opt.flag] = raw === true || raw === 'true'
     else formArgs[opt.flag] = raw !== undefined ? String(raw) : ''
   }
-  envRows.value = Object.entries(v.env || {}).map(([key, value]) => ({ key, value: String(value) }))
+  const declared = new Set(envFields.value.map((s) => s.key))
+  for (const key of Object.keys(envValues)) delete envValues[key]
+  for (const spec of envFields.value) {
+    const raw = v.env ? v.env[spec.key] : undefined
+    envValues[spec.key] = raw === undefined ? '' : String(raw)
+  }
+  envRows.value = Object.entries(v.env || {})
+    .filter(([key]) => !declared.has(key))
+    .map(([key, value]) => ({ key, value: String(value) }))
   priorityInput.value = v.priority === null || v.priority === undefined ? '' : String(v.priority)
   saveAsName.value = editingName.value
   error.value = ''
@@ -129,6 +155,18 @@ watch(
     loadFromVariation()
   }
 )
+
+// A rescan can surface .env.example keys after the modal is already open
+// (first scan of a freshly installed app). Fill those in without touching a
+// field that is being typed into.
+watch(envFields, (specs) => {
+  const v = (props.app.variations || {})[editingName.value] || {}
+  for (const spec of specs) {
+    if (envValues[spec.key] !== undefined) continue
+    const raw = v.env ? v.env[spec.key] : undefined
+    envValues[spec.key] = raw === undefined ? '' : String(raw)
+  }
+})
 
 function buildArgs() {
   const args = {}
@@ -147,6 +185,13 @@ function buildEnv() {
   const env = {}
   for (const row of envRows.value) {
     if (row.key.trim()) env[row.key.trim()] = row.value
+  }
+  // Declared fields win over a stray row with the same name, and a blank one
+  // means "unset" — the example value is a placeholder, never a default.
+  for (const spec of envFields.value) {
+    const val = envValues[spec.key]
+    if (val !== '' && val !== undefined && val !== null) env[spec.key] = val
+    else delete env[spec.key]
   }
   return env
 }

@@ -47,6 +47,7 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
       "tags": ["clock"],
       "dir": "/abs/path/apps/clock",
       "options": [ { "flag": "--host", "type": "str", "default": "10.0.4.20", "choices": null, "help": "…" } ],
+      "envSpec": [ { "key": "WEATHER_API_KEY", "example": "your-api-key-here", "help": "…" } ],
       "enabled": true,
       "status": "running",            // "running" | "starting" | "stopped" | "crashed"
       "pid": 123,
@@ -257,6 +258,16 @@ Duplicate signals, ranked. Grouping only ever happens within a single `(source, 
 **Variation migration** is wholesale or not at all — never a key-by-key merge, which would produce a config that runs but is wrong. It only fires when the keeper's config is still pristine (a single untouched `default` variation) and exactly one of the removed copies carries settings. `enabled` is never migrated: the keeper rule already prefers the enabled copy.
 
 **Containment invariant:** the manager only ever deletes directories that are direct, non-dot, non-symlink children of `<projectroot>/apps/`. A slug is a single path segment — separators, `.`/`..` and leading dots are rejected with a 400, always after decoding. `appsDirs` folders are never deleted under any code path.
+
+## Env var discovery (`envSpec`)
+
+An app folder containing `.env.example` (also accepted: `env.example`, `.env.sample`) declares which env vars it reads. The manager parses it during the scan — cached on the file's mtime, same as argparse option discovery — and reports the result per app as `envSpec`, an ordered list of `{ key, example, help }`:
+
+- `KEY=value` and `export KEY=value` lines; `#` comment lines directly above an entry (no blank line in between) become its `help`; a value may be quoted, and an unquoted trailing `# note` is stripped.
+- `example` is `null` when the template leaves the value empty. First occurrence of a key wins.
+- The dashboard renders one field per entry with the **name fixed** and the example value as the input's placeholder; env vars stored on a variation that the template does not declare stay editable free-form KEY/value rows.
+
+**Example values are never applied.** They are documentation (`your-api-key-here`), so the manager passes only what the variation actually stores; an empty field means the key is not set at all and the app falls back to its own default. A flat `<appsDir>/<slug>.py` app has `envSpec: []` — it shares its folder with every other flat script there, so a folder-level template cannot be attributed to it.
 
 ## Supervisor behavior
 
