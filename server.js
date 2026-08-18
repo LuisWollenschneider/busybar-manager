@@ -3120,7 +3120,7 @@ function handleStatic(req, res, p) {
     res.writeHead(200, Object.assign({ "Content-Type": "text/plain; charset=utf-8" }, CORS));
     return res.end(
       "busybar-manager is running, but web/dist was not found.\n" +
-      "Build the dashboard (cd web && npm install && npm run build), or use the API directly:\n" +
+      "Build the dashboard (npm run build), or use the API directly:\n" +
       "  GET  /health\n  GET  /api/_manager/state\n  GET  /events (SSE)\n"
     );
   }
@@ -3232,8 +3232,11 @@ async function main() {
   const port = getListenPort();
   // Bind loopback-only by default: the manager controls the bar and runs apps,
   // so it must not be reachable from the LAN. Set bindHost in config.json
-  // (e.g. "0.0.0.0") to expose it deliberately.
-  const bindHost = typeof config.bindHost === "string" && config.bindHost ? config.bindHost : "127.0.0.1";
+  // (e.g. "0.0.0.0") to expose it deliberately. BUSYBAR_BIND_HOST overrides it,
+  // which containers need since loopback inside a container is unreachable from
+  // a published port.
+  const bindHost = process.env.BUSYBAR_BIND_HOST
+    || (typeof config.bindHost === "string" && config.bindHost ? config.bindHost : "127.0.0.1");
   server.listen(port, bindHost, () => {
     log(`busybar-manager listening on ${bindHost}:${port} (bar=${barTargetLabel()}, appsDirs=${JSON.stringify(config.appsDirs)})`);
   });

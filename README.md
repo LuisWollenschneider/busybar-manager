@@ -44,11 +44,12 @@
 ```bash
 git clone https://github.com/maxswinkels/busybar-manager.git
 cd busybar-manager
+npm run build   # builds the dashboard into web/dist (once, and after web changes)
 node server.js
 # → Dashboard: http://127.0.0.1:8321
 ```
 
-Open **http://127.0.0.1:8321**, install apps from the **Library** tab (pulled from [busybar-apps](https://github.com/maxswinkels/busybar-apps)), and toggle them on. The manager listens on `127.0.0.1:8321` and starts each app with `--host 127.0.0.1:8321`, forwarding its draws to the bar. It's a zero-dependency Node server, so there's nothing to `npm install` at the root.
+Open **http://127.0.0.1:8321**, install apps from the **Library** tab (pulled from [busybar-apps](https://github.com/maxswinkels/busybar-apps)), and toggle them on. The manager listens on `127.0.0.1:8321` and starts each app with `--host 127.0.0.1:8321`, forwarding its draws to the bar. The server itself is zero-dependency, so `npm run build` only installs what Vite needs for the dashboard; skip it and the server still runs, it just serves a plain-text page instead of the UI.
 
 > [!TIP]
 > No hardware yet? Point the manager at the [emulator](https://github.com/maxswinkels/busybar-emulator) instead: set **Bar host** to `127.0.0.1:8080` in the Settings tab. Everything works the same.
@@ -137,12 +138,40 @@ Run the installer once:
 ./scripts/install.sh
 ```
 
-It checks Node ≥22 + python3, creates `logs/`, installs the LaunchAgent to `~/Library/LaunchAgents/nl.backspaced.busybar-manager.plist` (substituting the real node path + project dir), bootstraps it with `launchctl`, and starts it. After login the manager always runs and every enabled app starts in its chosen variation.
+It checks Node ≥22 + python3, builds the dashboard (`web/dist`), creates `logs/`, installs the LaunchAgent to `~/Library/LaunchAgents/nl.backspaced.busybar-manager.plist` (substituting the real node path + project dir), bootstraps it with `launchctl`, and starts it. After login the manager always runs and every enabled app starts in its chosen variation.
 
 ```bash
 tail -f logs/manager.log logs/manager.err.log   # view logs
 ./scripts/uninstall.sh                           # remove the LaunchAgent (project files stay)
 ```
+
+## Docker
+
+> [!NOTE]
+> If running the LaunchAgent, `docker compose up` will fail because the LaunchAgent already binds 8321. Either stop the LaunchAgent first, or change `BUSYBAR_PORT` in `.env` to a free port.
+
+```bash
+docker compose up -d          # build + start, dashboard on http://127.0.0.1:8321
+docker compose logs -f        # follow the manager log (it logs to stdout)
+docker compose down           # stop
+```
+
+The image is `node:22-slim` plus `python3`/`python3-venv`/`python3-pip`, since every community app gets its own `.venv` created at start. The dashboard is built from `web/src` in a first build stage.
+
+| Host | Container | Holds |
+| --- | --- | --- |
+| `./docker/data` | `/data` | `config.json` (path set via `BUSYBAR_MANAGER_CONFIG`) |
+| `./docker/apps` | `/app/apps` | apps installed from the library/uploads, plus their `.venv`s |
+
+`config.json` is mounted as a *directory*, not a single file: the manager saves it with a tmp-file + `rename`, which fails against a bind-mounted file. Seed it by copying `config.example.json` to `docker/data/config.json` — a missing file just boots the defaults.
+
+A few things differ from a bare-metal run:
+
+- **Set `TZ` in `.env` to your own timezone.** A container with no `TZ` runs on UTC, and the scheduler matches slots against local time (`getDay()`/`getHours()` in `activeSlotAt`), so a slot set for 08:00 would fire at 10:00 on a CEST host. The compose file defaults to `TZ=Europe/Amsterdam`; `docker compose exec busybar-manager date` shows what the container actually thinks the time is.
+
+- `BUSYBAR_PUBLISH_HOST` (default `127.0.0.1`) set to `0.0.0.0` to make it reachable from the LAN. The dashboard has no authentication, so only do that on a trusted network.
+- **`config.json`'s `listenPort` is ignored**; instead set `BUSYBAR_PORT` in `.env` (default 8321).
+- In `local` bar mode, `barHost` must be an IP or DNS name the container can resolve. Docker's bridge network reaches the LAN fine, but it does not do mDNS — a `*.local` bar hostname needs the IP instead, or `network_mode: host`.
 
 ## The API
 
@@ -193,13 +222,14 @@ Zero-dependency Node server, Vue 3 frontend built with Vite, SSE for live update
 
 ### Building the dashboard
 
-`server.js` serves the built web UI from `web/dist/`, and that folder is **committed** so a fresh clone boots straight to a working dashboard. After changing anything in `web/src/`, rebuild and commit the new `web/dist`:
+`server.js` serves the built web UI from `web/dist/`. That folder is **not committed** (it's gitignored): everyone builds it from `web/src/`, so frontend PRs never collide over a generated bundle. Build it once after cloning, and again after changing anything in `web/src/`:
 
 ```bash
-cd web && npm install && npm run build
+npm run build          # from the repo root
+cd web && npm run dev  # or: live-reloading Vite dev server
 ```
 
-There's deliberately no automated build (no git hook) — do it manually after web changes.
+`scripts/install.sh` builds it for you as part of setting up the LaunchAgent. There's deliberately no automated build on `node server.js`, and no git hook: do it manually after web changes. Without a build the server still starts and the API works; `/` just answers with a note explaining how to build the dashboard.
 
 ## Configuration
 
@@ -228,7 +258,7 @@ Settings live in `config.json` (atomic writes; changes from the dashboard persis
 }
 ```
 
-- `listenPort` — port the manager listens on (default 8321).
+- `listenPort` — port the manager listens on (default 8321). The `PORT` env var overrides it, which is what the Docker setup uses; see [Docker](#docker).
 - `barMode` — `"local"` (default) talks to the bar on your network; `"cloud"` routes every bar request through `https://api.busy.app/busybar/…` instead, so the bar doesn't have to be reachable from this machine.
 - `barHost` — IP or `host:port` of the bar, `barMode: "local"` only (default `10.0.4.20`; use `127.0.0.1:8080` for the emulator).
 - `token` — the bar's Wi-Fi token, sent as `X-API-Token` in local mode.
@@ -252,6 +282,7 @@ A zero-dependency end-to-end suite against a mock BUSY Bar + mock GitHub, coveri
 - **Node.js ≥ 22**
 - **python3**
 - **macOS** for autostart (the LaunchAgent is macOS-specific; the server itself is cross-platform)
+- …or **Docker** — the compose setup ships both runtimes, see [Docker](#docker)
 - A **BUSY Bar** over USB-ethernet (default `10.0.4.20`) or Wi-Fi — or the [emulator](https://github.com/maxswinkels/busybar-emulator)
 
 ## Related projects
