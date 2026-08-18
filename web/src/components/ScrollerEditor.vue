@@ -112,7 +112,7 @@ const activeStepId = computed(() => props.scroller.activeStepId || null)
 let nextKey = 0
 const form = reactive({
   name: props.scroller.name || '',
-  baseDurationSec: props.scroller.baseDurationSec || 10,
+  baseDurationSec: props.scroller.baseDurationSec || 30,
   steps: (props.scroller.steps || []).map((s) => ({
     key: nextKey++,
     id: s.id || null,
