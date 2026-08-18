@@ -2832,8 +2832,11 @@ async function main() {
   const port = getListenPort();
   // Bind loopback-only by default: the manager controls the bar and runs apps,
   // so it must not be reachable from the LAN. Set bindHost in config.json
-  // (e.g. "0.0.0.0") to expose it deliberately.
-  const bindHost = typeof config.bindHost === "string" && config.bindHost ? config.bindHost : "127.0.0.1";
+  // (e.g. "0.0.0.0") to expose it deliberately. BUSYBAR_BIND_HOST overrides it,
+  // which containers need since loopback inside a container is unreachable from
+  // a published port.
+  const bindHost = process.env.BUSYBAR_BIND_HOST
+    || (typeof config.bindHost === "string" && config.bindHost ? config.bindHost : "127.0.0.1");
   server.listen(port, bindHost, () => {
     log(`busybar-manager listening on ${bindHost}:${port} (bar=${barTargetLabel()}, appsDirs=${JSON.stringify(config.appsDirs)})`);
   });

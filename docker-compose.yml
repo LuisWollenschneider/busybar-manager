@@ -1,0 +1,39 @@
+services:
+  busybar-manager:
+    build: .
+    image: busybar-manager:local
+    container_name: busybar-manager
+    restart: unless-stopped
+    ports:
+      # Defaults to host-loopback only, same posture as the launchd install.
+      # Set BUSYBAR_PUBLISH_HOST=0.0.0.0 (e.g. in .env) to expose the dashboard
+      # on the LAN — it has no authentication, so only do that on a trusted
+      # network.
+      - "${BUSYBAR_PUBLISH_HOST:-127.0.0.1}:${BUSYBAR_PORT:-8321}:${BUSYBAR_PORT:-8321}"
+    environment:
+      # Every value below falls back to the same default the server uses, so
+      # `docker compose up -d` works with no .env; set any of them there to
+      # override. See .env.example.
+      #
+      # The scheduler matches slots against local time (getDay()/getHours() in
+      # activeSlotAt), so a container left at UTC fires slots at the wrong hour.
+      TZ: "${TZ:-Europe/Amsterdam}"
+      # A loopback bind inside the container is unreachable from the host
+      BUSYBAR_BIND_HOST: "0.0.0.0"
+      # Overrides config.json's listenPort, keeping the server on the port that
+      # is published and healthchecked. Change BUSYBAR_PORT (above), not
+      # listenPort, which the container ignores.
+      PORT: "${BUSYBAR_PORT:-8321}"
+      # config.json is rewritten via tmp-file + rename, which fails on a
+      # bind-mounted *file* — mount the directory instead.
+      BUSYBAR_MANAGER_CONFIG: "${BUSYBAR_MANAGER_CONFIG:-/data/config.json}"
+      # No BUSYBAR_PYTHON: the image installs exactly one interpreter
+      # (python3 + python3-venv), which is also what server.js defaults to.
+      # Any other value is a binary that does not exist in the container.
+      # API base URLs — only needed to point at a staging backend.
+      BUSYBAR_CLOUD_API_BASE: "${BUSYBAR_CLOUD_API_BASE:-https://api.busy.app/busybar}"
+      BUSYBAR_LIBRARY_API_BASE: "${BUSYBAR_LIBRARY_API_BASE:-https://api.github.com}"
+      BUSYBAR_LIBRARY_RAW_BASE: "${BUSYBAR_LIBRARY_RAW_BASE:-https://raw.githubusercontent.com}"
+    volumes:
+      - ./docker/data:/data
+      - ./docker/apps:/app/apps
