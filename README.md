@@ -153,7 +153,7 @@ The image is `node:22-slim` plus `python3`/`python3-venv`/`python3-pip`, since e
 
 `config.json` is mounted as a *directory*, not a single file: the manager saves it with a tmp-file + `rename`, which fails against a bind-mounted file. Seed it by copying `config.example.json` to `docker/data/config.json` — a missing file just boots the defaults.
 
-Five things differ from a bare-metal run:
+A few things differ from a bare-metal run:
 
 - **Set `TZ` in `.env` to your own timezone.** A container with no `TZ` runs on UTC, and the scheduler matches slots against local time (`getDay()`/`getHours()` in `activeSlotAt`), so a slot set for 08:00 would fire at 10:00 on a CEST host. The compose file defaults to `TZ=Europe/Amsterdam`; `docker compose exec busybar-manager date` shows what the container actually thinks the time is.
 
