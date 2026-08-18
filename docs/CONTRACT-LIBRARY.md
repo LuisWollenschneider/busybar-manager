@@ -47,7 +47,7 @@ Per installed app: `<projectroot>/apps/<slug>/.busybar-library.json`:
   "files": { "app.py": "<gitBlobSha>", "manifest.yaml": "<sha>", "requirements.txt": "<sha>" },
   "installedAt": 0, "updatedAt": 0 }
 ```
-- Runtime files + `manifest.yaml` are installed; `preview.*`, `__pycache__`, `.venv` are not (the UI shows previews via a raw URL).
+- Runtime files + `manifest.yaml` are installed; `preview.*`, `__pycache__`, `.venv` are not (the UI shows previews via a raw URL). The one dotfile that *is* installed (and stamped) is the env template `.env.example` — the dashboard needs it for `envSpec` (CONTRACT.md, "Env var discovery"). A `.env` is never fetched or installed.
 - The scanner ignores `.busybar-library.json` and may mark an app directory with a stamp as `source: "library"`.
 - The `files` sha map is also the primary duplicate signal (CONTRACT.md "Cleanup"): two slugs with the same `repo` and an identical map are the same app installed twice. Library stamps carry **git blob shas** and upload stamps carry **sha256**, so the two are never compared with each other. An empty/missing map is never a match — otherwise every stampless app would collide with every other one.
 

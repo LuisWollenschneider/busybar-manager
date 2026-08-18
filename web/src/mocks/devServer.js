@@ -20,6 +20,8 @@ function makeApp(overrides) {
     tags: [],
     dir: '/fake/apps/x',
     options: [],
+    // Env vars discovered from the app's .env.example (docs/CONTRACT.md).
+    envSpec: [],
     enabled: true,
     status: 'stopped',
     pid: null,
@@ -272,6 +274,11 @@ function createMockState() {
           { flag: '--radius', type: 'int', default: '25', choices: null, help: 'Search radius in kilometers' },
           { flag: '--dim', type: 'bool', default: false, choices: null, help: 'Use dimmed colors' },
           { flag: '--units', type: 'str', default: 'metric', choices: ['metric', 'imperial'], help: 'Units' },
+        ],
+        envSpec: [
+          { key: 'WEATHER_API_KEY', example: 'your-api-key-here', help: 'API key from openweathermap.org' },
+          { key: 'WEATHER_CACHE_TTL', example: '300', help: 'Seconds to cache a forecast' },
+          { key: 'WEATHER_DEBUG', example: null, help: '' },
         ],
       }),
       makeApp({
