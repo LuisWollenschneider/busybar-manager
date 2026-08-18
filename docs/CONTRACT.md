@@ -53,6 +53,8 @@ Mapping application_name→slug: when an app starts, the supervisor remembers wh
       "blocked": false,                // last draw got 409
       "lastDraw": { "ts": 1730000000000, "status": 200 },
       "variation": "default",
+      "scheduledVariation": null,      // runtime override while a slot or a scroller owns this app
+      "runtimeOwner": null,            // { "kind": "schedule" | "scroller", "id": "…", "name": "…" } | null
       "variations": {
         "default": { "args": {}, "env": {}, "priority": 10 }
       }
@@ -100,12 +102,14 @@ Errors: `{ "error": "…" }` with an appropriate 4xx/5xx.
 
 ## Schedule
 
-A weekly repeating timetable. A **slot** pins one app + one of its variations to a `[start, end)` window on one or more weekdays, so "Mon–Fri 08:00–10:00" is a single slot rather than five:
+A weekly repeating timetable. A **slot** pins one app + one of its variations — or one whole scroller — to a `[start, end)` window on one or more weekdays, so "Mon–Fri 08:00–10:00" is a single slot rather than five:
 
 ```json
-{ "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "slug": "clock", "variation": "night" }
+{ "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "kind": "app", "slug": "clock", "variation": "night" }
+{ "id": "3b0d…", "days": [0, 6], "start": "10:00", "end": "18:00", "kind": "scroller", "scrollerId": "a71e…" }
 ```
 
+- `kind`: `"app"` (default) or `"scroller"`. An `"app"` slot carries `slug` + `variation`, a `"scroller"` slot carries `scrollerId`. `kind` is optional on input — a body with a `slug` is an app slot, which is exactly the shape slots had before scrollers existed — and always present in state and on disk.
 - `days`: non-empty array of integers 0–6, **0 = Sunday** (same as JS `Date#getDay`), stored sorted and deduped. A single `day: 1` is accepted on input (and in configs written before multi-day slots) and normalized to `days: [1]`.
 - `start` / `end`: `"HH:MM"`, 24h, local time. `end` also accepts `"24:00"` ("until the end of the day"); `end` must be later than `start`, so a slot never crosses midnight — spanning it means two slots.
 - **No two slots may overlap on a day they share**, whatever app they name: at most one app is ever scheduled at any moment. Gaps are allowed, and in a gap the scheduler runs nothing.
@@ -117,20 +121,63 @@ Endpoints (all of them, except the GET, answer with the full state payload):
 
 - `GET /api/_manager/schedule` → `{ enabled, slots, activeSlotId }`
 - `PUT /api/_manager/schedule` body `{ "enabled": true }` — the master switch (persist; applied immediately).
-- `POST /api/_manager/schedule/slots` body `{ days, start, end, slug, variation? }` — create. `400` on malformed days/times, `404` on an unknown app or variation, `409` on an overlap (the message names the clashing slot and the days they share). `variation` defaults to `"default"`.
+- `POST /api/_manager/schedule/slots` body `{ days, start, end, kind?, slug, variation? }` (or `{ days, start, end, kind: "scroller", scrollerId }`) — create. `400` on malformed days/times or a bad `kind`, `404` on an unknown app, variation or scroller, `409` on an overlap (the message names the clashing slot's target and the days they share). `variation` defaults to `"default"`.
 - `PUT /api/_manager/schedule/slots/:id` — same body and same errors; the slot being edited is excluded from the overlap check. `404` when the id is unknown.
 - `DELETE /api/_manager/schedule/slots/:id` — `404` when the id is unknown.
 
 Behavior:
 
 - The scheduler **only manages the apps its own slots name**. An app the user enabled by hand keeps running alongside the scheduled one and is never stopped by a slot starting or ending.
-- Starting a slot does **not** set `enabled` on the app: the run is runtime-only, so the window can end without rewriting the user's own on/off choice. The same goes for the variation — the slot's variation is applied as a runtime override, exposed per app in state as `scheduledVariation` (`null` when no slot owns the app), while `variation` keeps showing the user's own selection.
+- Starting a slot does **not** set `enabled` on the app: the run is runtime-only, so the window can end without rewriting the user's own on/off choice. The same goes for the variation — the slot's variation is applied as a runtime override, exposed per app in state as `scheduledVariation` (`null` when nothing owns the app), while `variation` keeps showing the user's own selection. `runtimeOwner` says which mechanism is holding the app up.
+- A `"scroller"` slot hands the window to the scroller engine, which cycles the scroller's steps for as long as the slot lasts. It does **not** set `enabled` on the scroller either (state exposes that as `scheduled: true`), and when the window ends the cycle stops and the last step's app is stopped and cleared like any other scheduled app.
 - When a slot ends: if the user also has the app enabled it is restarted under their own variation, otherwise it is stopped and its frame is cleared off the bar (`DELETE /api/display/draw`, exactly like a manual disable).
 - Back-to-back slots for the same app only restart it when the variation differs.
 - A crash inside a window is restarted by the normal supervisor backoff.
 - The engine re-evaluates every 15 s (and immediately on any schedule change or at boot, so a manager restart mid-window brings the app back up). Local wall-clock time is re-read every tick, so DST shifts need no special handling.
 - Deleting a variation a slot refers to is allowed; the slot then falls back to the app's own selected variation and logs a line.
 - A hand-edited `config.json` containing overlapping slots, duplicate ids or malformed slots is not fatal: the offending entries are dropped on load and the rest is kept.
+
+## Scrollers
+
+A **scroller** is a named, ordered cycle of apps: each step puts one app + variation on the bar for a few seconds and then hands over to the next, wrapping at the end. It lets single-purpose apps stay simple — the bar pages through them instead of one app paging through everything.
+
+```json
+{
+  "id": "a71e…",
+  "name": "Desk",
+  "enabled": false,
+  "baseDurationSec": 30,
+  "steps": [
+    { "id": "0b2f…", "slug": "clock", "variation": "default", "durationSec": null },
+    { "id": "9d51…", "slug": "weather", "variation": "night", "durationSec": 20 }
+  ]
+}
+```
+
+- `name`: non-empty, ≤ 60 characters, trimmed. Free text, not an id.
+- `baseDurationSec`: whole seconds, 1–3600, default 30 — how long each step holds the bar.
+- `steps`: ordered, may be empty (a scroller with nothing in it simply shows nothing). **The array order is the cycle order, so reordering is expressed by sending `steps` in the new order.** Every step names a `variation` explicitly (`"default"` when the body leaves it out) and may set `durationSec` (1–3600) to override `baseDurationSec` for that step only; `null` means "use the base duration".
+- `id` (scroller and step alike) is server-minted on create. Step ids sent back on an update are preserved, so a reorder does not renumber the steps.
+
+State: each entry of `scrollers` is the stored scroller plus what it is doing right now — `running` (a cycle is going), `scheduled` (a schedule slot is driving it), `activeStepId` and `activeSlug` (the step on the bar, `null` between/without steps).
+
+Endpoints (all of them, except the GET, answer with the full state payload):
+
+- `GET /api/_manager/scrollers` → `{ scrollers: [ … ] }`
+- `POST /api/_manager/scrollers` body `{ name, baseDurationSec?, steps?, enabled? }` — create. `400` on a missing name or a bad duration, `404` on an unknown app or variation.
+- `PUT /api/_manager/scrollers/:id` — same body and same errors; every field is optional and an omitted one keeps its stored value. `404` when the id is unknown.
+- `DELETE /api/_manager/scrollers/:id` — also **drops every schedule slot that named this scroller**, which could otherwise only be a silent no-op in the calendar. `404` when the id is unknown.
+- `POST /api/_manager/scrollers/:id/enable` | `/disable` — the scroller's own switch (persist; applied immediately).
+
+Behavior:
+
+- A scroller runs while the user enabled it **or** while a schedule slot names it. While running it holds exactly one app at a time, as a runtime claim: `enabled` in `config.apps` is never written, so a step handing over does not rewrite the user's own on/off choice. The app's row carries the claim in `scheduledVariation` + `runtimeOwner`.
+- Handing over stops the previous step's app and clears its frame off the bar (`DELETE /api/display/draw`, exactly like a manual disable) — unless the user has that app enabled too, in which case it stays up and simply goes back to their own variation.
+- Two scrollers may name the same app: the first claim decides the variation and the app stays up until the last claim is gone. An app the user enabled by hand is never stopped by a scroller stepping over it.
+- Steps whose app is not installed are **skipped**, so a removed app costs no screen time; if that leaves nothing runnable the scroller keeps checking every 5 s instead of ending. Deleting a variation a step refers to is allowed: the step falls back to the app's own selected variation and logs a line.
+- Renaming a scroller or toggling its switch does not disturb what is on the bar. Changing its `steps` or `baseDurationSec` restarts the cycle from step one, since continuing at the old index would land on an unrelated app.
+- A manager restart brings an enabled scroller straight back up, starting its cycle from the first step.
+- A hand-edited `config.json` containing malformed steps, unusable durations or duplicate scroller ids is not fatal: the offending entries are dropped (or fall back to the defaults) on load and the rest is kept.
 
 ## SSE `GET /events`
 
@@ -169,10 +216,19 @@ Source order: (1) firmware ws, (2) `/api/screen` polling (the real bar), (3) **e
       "variations": { "default": { "args": {}, "env": {}, "priority": 10 } }
     }
   },
+  "scrollers": [
+    {
+      "id": "a71e…",
+      "name": "Desk",
+      "enabled": false,
+      "baseDurationSec": 30,
+      "steps": [{ "id": "0b2f…", "slug": "clock", "variation": "default", "durationSec": null }]
+    }
+  ],
   "schedule": {
     "enabled": false,
     "slots": [
-      { "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "slug": "clock", "variation": "default" }
+      { "id": "8f1c…", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "10:00", "kind": "app", "slug": "clock", "variation": "default" }
     ]
   }
 }

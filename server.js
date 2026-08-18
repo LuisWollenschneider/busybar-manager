@@ -80,7 +80,7 @@ function defaultConfig() {
   return {
     listenPort: 8321, barMode: "local", barHost: "10.0.4.20", token: null,
     cloudToken: null, appsDirs: [], apps: {}, library: normalizeLibrary(undefined),
-    schedule: normalizeSchedule(undefined),
+    scrollers: [], schedule: normalizeSchedule(undefined),
   };
 }
 
@@ -131,16 +131,25 @@ function coerceDays(raw) {
 // Shape-check a raw slot; returns null when it is unusable. Used both for
 // config loaded from disk and for API bodies (the API reports *why* via
 // validateSlotBody below, this one just drops junk).
+//
+// A slot targets either one app + variation (`kind: "app"`, the original
+// shape — a slot written before scrollers existed carries no `kind` and reads
+// back as one) or a whole scroller (`kind: "scroller"` + `scrollerId`).
 function coerceSlot(raw) {
   if (!raw || typeof raw !== "object") return null;
   const days = coerceDays(raw);
   if (!days) return null;
   if (!isHHMM(raw.start) || !isEndHHMM(raw.end)) return null;
   if (minutesOf(raw.end) <= minutesOf(raw.start)) return null;
-  if (typeof raw.slug !== "string" || !raw.slug) return null;
   const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const base = { id, days, start: raw.start, end: raw.end };
+  if (raw.kind === "scroller" || (!raw.slug && typeof raw.scrollerId === "string")) {
+    if (typeof raw.scrollerId !== "string" || !raw.scrollerId) return null;
+    return Object.assign(base, { kind: "scroller", scrollerId: raw.scrollerId });
+  }
+  if (typeof raw.slug !== "string" || !raw.slug) return null;
   const variation = typeof raw.variation === "string" && raw.variation ? raw.variation : "default";
-  return { id, days, start: raw.start, end: raw.end, slug: raw.slug, variation };
+  return Object.assign(base, { kind: "app", slug: raw.slug, variation });
 }
 
 function normalizeSchedule(rawSched) {
@@ -156,6 +165,69 @@ function normalizeSchedule(rawSched) {
     slots.push(slot);
   }
   return { enabled: s.enabled === true, slots: sortSlots(slots) };
+}
+
+/* -------------------------------- scrollers -------------------------------- */
+// A scroller is a named, ordered cycle of steps. Each step puts one app +
+// variation on the bar for a few seconds and then hands over to the next one,
+// so several single-purpose apps can share one bar instead of every app having
+// to page through its own information. A step runs for the scroller's
+// `baseDurationSec` unless it carries its own `durationSec` override.
+const DEFAULT_SCROLLER_DURATION_SEC = 30;
+const MAX_DURATION_SEC = 3600;
+// How long a running scroller with nothing runnable in it (empty, or every
+// step's app removed) waits before looking again.
+const SCROLLER_IDLE_RECHECK_MS = 5000;
+
+// Whole seconds, 1..MAX_DURATION_SEC; null for anything else, so callers can
+// treat "unusable" and "not set" the same way.
+function coerceDuration(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const secs = Math.round(n);
+  if (secs < 1 || secs > MAX_DURATION_SEC) return null;
+  return secs;
+}
+
+function coerceStep(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.slug !== "string" || !raw.slug) return null;
+  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const variation = typeof raw.variation === "string" && raw.variation ? raw.variation : "default";
+  // Missing/null/junk all mean "use the scroller's base duration" — a bad
+  // duration is not worth dropping the whole step over.
+  const durationSec = raw.durationSec === undefined || raw.durationSec === null ? null : coerceDuration(raw.durationSec);
+  return { id, slug: raw.slug, variation, durationSec };
+}
+
+function coerceScroller(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : "Scroller";
+  const baseDurationSec = coerceDuration(raw.baseDurationSec) || DEFAULT_SCROLLER_DURATION_SEC;
+  const steps = (Array.isArray(raw.steps) ? raw.steps : []).map(coerceStep).filter(Boolean);
+  return { id, name, enabled: raw.enabled === true, baseDurationSec, steps };
+}
+
+function normalizeScrollers(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const rawScroller of Array.isArray(raw) ? raw : []) {
+    const sc = coerceScroller(rawScroller);
+    // Same tolerance as the schedule: a hand-edited config keeps the first of
+    // each duplicate id rather than refusing to boot.
+    if (!sc || seen.has(sc.id)) continue;
+    seen.add(sc.id);
+    out.push(sc);
+  }
+  return out;
+}
+
+function findScroller(id) {
+  return config.scrollers.find((s) => s.id === id) || null;
+}
+function stepDurationSec(sc, step) {
+  return step.durationSec || sc.baseDurationSec;
 }
 
 // Managed apps draw at a deliberately low priority so anything started by
@@ -187,6 +259,7 @@ function normalizeConfig(raw) {
   if (!Array.isArray(cfg.appsDirs)) cfg.appsDirs = [];
   if (!cfg.apps || typeof cfg.apps !== "object") cfg.apps = {};
   cfg.library = normalizeLibrary(raw && raw.library);
+  cfg.scrollers = normalizeScrollers(raw && raw.scrollers);
   cfg.schedule = normalizeSchedule(raw && raw.schedule);
   for (const slug of Object.keys(cfg.apps)) {
     const a = cfg.apps[slug] || {};
@@ -593,21 +666,36 @@ function getRuntime(slug) {
       applicationNames: new Set(),
       lastDraw: null,
       blocked: false,
-      // Set by the scheduler while a slot owns this app: the variation the
-      // process is actually started with, without touching the user's own
-      // selection in config (see "schedule engine").
-      variationOverride: null,
+      startedVariation: null,
     };
   }
   return runtime[slug];
 }
 
-// The variation an app runs under right now: a scheduler override if a slot
-// owns the app, otherwise the user's own selection. Falls back to the plain
+/* ------------------------------ runtime claims ----------------------------- */
+// A claim keeps an app running under a given variation *without* touching the
+// user's own `enabled` flag in config, so a schedule window can end — or a
+// scroller step hand over — without rewriting their on/off choice. Owner keys
+// are "schedule" and `scroller:<id>`. An app can be claimed by more than one
+// owner at a time (two scrollers naming it); the first claim decides the
+// variation and the app stays up until the last claim is gone.
+const claims = new Map(); // ownerKey -> { slug, variation }
+
+function claimOn(slug) {
+  for (const [owner, c] of claims) if (c.slug === slug) return { owner, slug: c.slug, variation: c.variation };
+  return null;
+}
+function claimedVariation(slug) {
+  const c = claimOn(slug);
+  return c ? c.variation : null;
+}
+
+// The variation an app runs under right now: a runtime override if some owner
+// claims the app, otherwise the user's own selection. Falls back to the plain
 // selection when the override names a variation that has since been deleted.
 function effectiveVariationName(slug) {
   const appCfg = getAppConfigView(slug);
-  const override = getRuntime(slug).variationOverride;
+  const override = claimedVariation(slug);
   if (override && appCfg.variations[override]) return override;
   return appCfg.variation;
 }
@@ -746,6 +834,7 @@ async function startApp(slug) {
   }
 
   const variation = effectiveVariation(slug);
+  rt.startedVariation = effectiveVariationName(slug);
   const argv = [entry.scriptPath, "--host", `127.0.0.1:${getListenPort()}`, ...buildArgv(variation.args)];
   const env = Object.assign({}, process.env, variation.env || {}, { PYTHONUNBUFFERED: "1" });
 
@@ -797,16 +886,16 @@ async function startApp(slug) {
 }
 
 // An app is supposed to be running when the user enabled it *or* when a
-// schedule slot currently owns it — a scheduled app is deliberately not
-// marked `enabled` in config, so its window can end without rewriting the
-// user's own on/off choice.
+// runtime owner (a schedule slot, a scroller step) claims it — a claimed app
+// is deliberately not marked `enabled` in config, so the claim can end without
+// rewriting the user's own on/off choice.
 function shouldBeRunning(slug) {
-  return getAppConfigView(slug).enabled || scheduledSlug === slug;
+  return getAppConfigView(slug).enabled || !!claimOn(slug);
 }
 
 // shouldBeRunning is also the guard that keeps a removed app from resurrecting
 // itself: removeApp() drops config.apps[slug], so getAppConfigView falls back
-// to defaultAppConfig() (enabled: false), and it clears the scheduler's pointer
+// to defaultAppConfig() (enabled: false), and it drops every claim on the slug
 // so the second half cannot hold the app up either. Both checks below depend on
 // that; do not "simplify" either of them away.
 function scheduleRestart(slug) {
@@ -859,6 +948,49 @@ function stopApp(slug) {
   });
 }
 
+// Bring one app in line with what config plus the claims on it say: running
+// under the right variation, or stopped with its frame cleared off the bar
+// (exactly like a manual disable). Every runtime owner goes through here, so
+// two owners can hand an app back and forth without either of them having to
+// know about the other.
+async function syncApp(slug) {
+  const rt = getRuntime(slug);
+  if (!shouldBeRunning(slug)) {
+    clearRestartTimers(rt);
+    // Never came up in the first place: nothing to stop and nothing of its own
+    // on the bar to clear (a batch of these against an unreachable bar would
+    // otherwise cost 5 s apiece).
+    if (rt.status === "stopped" && !rt.child) return;
+    const names = rt.applicationNames.size ? Array.from(rt.applicationNames) : [slug];
+    await stopApp(slug);
+    for (const n of names) await sendDisplayClear(n);
+    return;
+  }
+  if (rt.status !== "running" && rt.status !== "starting") {
+    await startApp(slug);
+    return;
+  }
+  // Already up: only a different variation than the live process was spawned
+  // with is worth a restart.
+  if (rt.startedVariation !== effectiveVariationName(slug)) await restartApp(slug);
+}
+
+// Claim `slug` for `owner`, releasing whatever that owner claimed before.
+// Passing a null slug is a plain release. Both the old and the new app are
+// synced, so this is the only call a runtime owner needs to switch targets.
+async function setClaim(owner, slug, variation) {
+  const prev = claims.get(owner) || null;
+  if (prev && prev.slug === slug && prev.variation === variation) return;
+  claims.delete(owner);
+  if (slug) claims.set(owner, { slug, variation: variation || "default" });
+  if (prev && prev.slug !== slug) await syncApp(prev.slug);
+  if (slug) await syncApp(slug);
+  scheduleStateBroadcast();
+}
+function releaseClaim(owner) {
+  return setClaim(owner, null, null);
+}
+
 async function restartApp(slug) {
   await stopApp(slug);
   // A restart is not a stop: if stopApp just flagged an in-flight start (no
@@ -902,15 +1034,17 @@ async function removeApp(slug) {
   const hadConfig = !!config.apps[slug];
   delete config.apps[slug];
   delete runtime[slug];
-  // A removed app must not stay scheduler-owned: shouldBeRunning() consults
-  // scheduledSlug, and currentScreenOwner()/state would keep naming a slug that
-  // no longer exists. scheduledSlotKey is deliberately left set, so the current
-  // window does not immediately try to serve the slot again; the next window
-  // change re-evaluates from scratch. The user's slots are left alone, so a
-  // reinstall under the same slug simply starts working again.
-  if (scheduledSlug === slug) {
-    scheduledSlug = null;
-    scheduledSlotId = null;
+  // A removed app must not stay claimed: shouldBeRunning() consults the claim
+  // map, and currentScreenOwner()/state would keep naming a slug that no longer
+  // exists. scheduledSlotKey is deliberately left set, so the current window
+  // does not immediately try to serve the slot again; the next window change
+  // re-evaluates from scratch. The user's slots and scroller steps are left
+  // alone, so a reinstall under the same slug simply starts working again — a
+  // scroller stepping onto the gone app just skips it (see runnableSteps).
+  for (const [owner, c] of claims) {
+    if (c.slug !== slug) continue;
+    claims.delete(owner);
+    if (owner === SCHEDULE_OWNER) scheduledSlotId = null;
   }
   if (lastSuccessfulDraw && lastSuccessfulDraw.slug === slug) lastSuccessfulDraw = null;
   return { slug, dirRemoved: !!dir, configRemoved: hadConfig };
@@ -923,9 +1057,10 @@ async function removeApp(slug) {
 // manages its own apps only"). Local wall-clock time, recomputed every tick,
 // so DST shifts need no special handling.
 const SCHEDULE_TICK_MS = 15000;
-let scheduledSlotKey = null; // id|slug|variation of the slot being served, if any
+const SCHEDULE_OWNER = "schedule";
+let scheduledSlotKey = null; // contents of the slot being served, if any
 let scheduledSlotId = null; // slot currently being served, if any
-let scheduledSlug = null; // the app that slot started (scheduler-owned)
+let scheduledScrollerId = null; // scroller a slot is running right now, if any
 let scheduleChain = Promise.resolve(); // serializes overlapping applySchedule() calls
 
 function activeSlotAt(date) {
@@ -935,60 +1070,42 @@ function activeSlotAt(date) {
   return config.schedule.slots.find((s) => s.days.includes(day) && mins >= minutesOf(s.start) && mins < minutesOf(s.end)) || null;
 }
 
-// Hand an app back after its slot ended: drop the override, then either stop
-// it (scheduler-only app — clear its frame off the bar, same as a manual
-// disable) or restart it under the user's own variation (the user had it
-// enabled too, so it stays up).
-async function releaseScheduledApp(slug) {
-  const rt = getRuntime(slug);
-  const hadOverride = rt.variationOverride !== null;
-  rt.variationOverride = null;
-  if (getAppConfigView(slug).enabled) {
-    if (hadOverride) await restartApp(slug);
-    return;
-  }
-  const names = rt.applicationNames.size ? Array.from(rt.applicationNames) : [slug];
-  await stopApp(slug);
-  for (const n of names) await sendDisplayClear(n);
+// Keyed on the slot's contents, not just its id, so editing the app, the
+// variation or the scroller of the slot that is running right now takes effect
+// at once.
+function slotKey(slot) {
+  if (!slot) return null;
+  return slot.kind === "scroller" ? `${slot.id}|scroller|${slot.scrollerId}` : `${slot.id}|app|${slot.slug}|${slot.variation}`;
 }
 
 async function doApplySchedule() {
   const slot = activeSlotAt(new Date());
-  const wantId = slot ? slot.id : null;
-  const wantSlug = slot ? slot.slug : null;
-  const wantVariation = slot ? slot.variation : null;
-
-  // Keyed on the slot's contents, not just its id, so editing the app or
-  // variation of the slot that is running right now takes effect at once.
-  const wantKey = slot ? `${wantId}|${wantSlug}|${wantVariation}` : null;
+  const wantKey = slotKey(slot);
   if (wantKey === scheduledSlotKey) {
     // Same slot as last tick. Nothing to switch; a crash inside the window is
     // handled by the supervisor's own backoff restart (see shouldBeRunning).
     return;
   }
 
-  const prevSlug = scheduledSlug;
   scheduledSlotKey = wantKey;
-  scheduledSlotId = wantId;
-  scheduledSlug = wantSlug;
+  scheduledSlotId = slot ? slot.id : null;
+  scheduledScrollerId = slot && slot.kind === "scroller" ? slot.scrollerId : null;
 
-  if (prevSlug && prevSlug !== wantSlug) await releaseScheduledApp(prevSlug);
-
-  if (wantSlug) {
-    const rt = getRuntime(wantSlug);
-    const wasRunning = rt.status === "running" || rt.status === "starting";
-    // Compare against what it is *effectively* running under, so a slot that
-    // asks for the variation the user already had selected costs no restart.
-    const variationChanged = effectiveVariationName(wantSlug) !== wantVariation;
-    rt.variationOverride = wantVariation;
-    if (!getAppConfigView(wantSlug).variations[wantVariation]) {
-      pushLog(wantSlug, "out", `[schedule] variation "${wantVariation}" no longer exists; using "${getAppConfigView(wantSlug).variation}"`);
+  if (!slot || slot.kind !== "app") {
+    await releaseClaim(SCHEDULE_OWNER);
+  } else {
+    if (!getAppConfigView(slot.slug).variations[slot.variation]) {
+      pushLog(slot.slug, "out", `[schedule] variation "${slot.variation}" no longer exists; using "${getAppConfigView(slot.slug).variation}"`);
     }
-    // Back-to-back slots for the same app only need a restart when the
-    // variation actually differs.
-    if (wasRunning && variationChanged) await restartApp(wantSlug);
-    else if (!wasRunning) await startApp(wantSlug);
+    // setClaim releases the previous slot's app (stopping it and clearing its
+    // frame unless the user has it enabled too) and only restarts the new one
+    // when it is not already running under that variation, so back-to-back
+    // slots for the same app+variation cost nothing.
+    await setClaim(SCHEDULE_OWNER, slot.slug, slot.variation);
   }
+  // A slot can hand the bar to a whole scroller instead of a single app; the
+  // scroller engine owns the apps from there.
+  await doApplyScrollers();
   scheduleStateBroadcast();
 }
 
@@ -997,6 +1114,122 @@ async function doApplySchedule() {
 function applySchedule() {
   scheduleChain = scheduleChain.then(doApplySchedule).catch((e) => log("schedule tick failed:", e.message));
   return scheduleChain;
+}
+
+/* ---------------------------- scroller engine ------------------------------ */
+// A running scroller owns a single claim (`scroller:<id>`) and walks it from
+// step to step on a timer: claim step 1's app, wait out its duration, hand the
+// claim to step 2, and so on, wrapping at the end. Releasing the claim stops
+// the app and clears its frame, exactly like a schedule window ending, so a
+// scroller never leaves a stale frame behind between steps.
+//
+// A scroller runs while the user enabled it, or while a schedule slot names it
+// (`scheduledScrollerId`). Every pass goes through the same chain as the
+// schedule's, so a tick can never interleave with an API-triggered pass.
+const scrollerRuns = new Map(); // scroller id -> { index, slug, stepId, startedAt, timer }
+
+function scrollerOwner(id) {
+  return `scroller:${id}`;
+}
+function scrollerShouldRun(sc) {
+  return sc.enabled || scheduledScrollerId === sc.id;
+}
+// Steps whose app is actually installed. A step naming a removed app is
+// skipped rather than spending its seconds on a screen nothing can draw to.
+function runnableSteps(sc) {
+  return sc.steps.filter((s) => !!findEntry(s.slug));
+}
+
+function armScrollerTimer(id, ms) {
+  const run = scrollerRuns.get(id);
+  if (!run) return;
+  if (run.timer) clearTimeout(run.timer);
+  run.timer = setTimeout(() => {
+    const r = scrollerRuns.get(id);
+    if (!r) return;
+    r.timer = null;
+    r.index++;
+    queueSchedule(() => scrollerStep(id));
+  }, ms);
+  run.timer.unref();
+}
+
+// Put the run's current step on the bar and arm the hand-over to the next one.
+async function scrollerStep(id) {
+  const run = scrollerRuns.get(id);
+  // A step landing while the manager is on its way out would spawn an app the
+  // shutdown has already stopped.
+  if (!run || shuttingDown) return;
+  const sc = findScroller(id);
+  if (!sc || !scrollerShouldRun(sc)) {
+    await endScrollerRun(id);
+    return;
+  }
+  const steps = runnableSteps(sc);
+  if (!steps.length) {
+    // Empty scroller, or every step's app is gone: drop the claim and look
+    // again shortly instead of ending the run, so it picks up by itself once
+    // an app is installed again.
+    run.index = 0;
+    run.slug = null;
+    run.stepId = null;
+    await releaseClaim(scrollerOwner(id));
+    armScrollerTimer(id, SCROLLER_IDLE_RECHECK_MS);
+    return;
+  }
+  run.index = ((run.index % steps.length) + steps.length) % steps.length;
+  const step = steps[run.index];
+  run.stepId = step.id;
+  run.slug = step.slug;
+  run.startedAt = Date.now();
+  if (!getAppConfigView(step.slug).variations[step.variation]) {
+    pushLog(step.slug, "out", `[scroller] variation "${step.variation}" no longer exists; using "${getAppConfigView(step.slug).variation}"`);
+  }
+  await setClaim(scrollerOwner(id), step.slug, step.variation);
+  armScrollerTimer(id, stepDurationSec(sc, step) * 1000);
+  scheduleStateBroadcast();
+}
+
+async function endScrollerRun(id) {
+  const run = scrollerRuns.get(id);
+  if (run && run.timer) clearTimeout(run.timer);
+  scrollerRuns.delete(id);
+  await releaseClaim(scrollerOwner(id));
+}
+
+// Start/stop runs so the set of running scrollers matches config plus whatever
+// the schedule is serving. A run that is already going is left alone — its
+// cycle only restarts when its steps change (see apiUpdateScroller).
+async function doApplyScrollers() {
+  const wanted = new Set(config.scrollers.filter(scrollerShouldRun).map((s) => s.id));
+  for (const id of [...scrollerRuns.keys()]) {
+    if (!wanted.has(id)) await endScrollerRun(id);
+  }
+  for (const id of wanted) {
+    if (scrollerRuns.has(id)) continue;
+    scrollerRuns.set(id, { index: 0, slug: null, stepId: null, startedAt: 0, timer: null });
+    await scrollerStep(id);
+  }
+}
+
+// Both engines share one chain: a scroller step and a schedule pass can both
+// stop and start apps, and they must not interleave while doing it.
+function queueSchedule(fn) {
+  scheduleChain = scheduleChain.then(fn).catch((e) => log("scroller step failed:", e.message));
+  return scheduleChain;
+}
+function applyScrollers() {
+  return queueSchedule(doApplyScrollers);
+}
+
+// Restart a scroller's cycle from its first step — used when its steps or
+// durations changed under it, where continuing at the old index would land on
+// an unrelated app.
+function restartScrollerRun(id) {
+  return queueSchedule(async () => {
+    if (scrollerRuns.has(id)) await endScrollerRun(id);
+    await doApplyScrollers();
+  });
 }
 
 /* ---------------------------- draw attribution ---------------------------- */
@@ -2101,7 +2334,8 @@ function buildState() {
       slug: e.slug, name: e.name, description: e.description, tags: e.tags, dir: e.dir,
       options: e.options, enabled: appCfg.enabled, status: rt.status, pid: rt.pid,
       blocked: rt.blocked, lastDraw: rt.lastDraw, variation: appCfg.variation,
-      scheduledVariation: rt.variationOverride, variations: appCfg.variations, missing: false,
+      scheduledVariation: claimedVariation(e.slug), runtimeOwner: runtimeOwnerPayload(e.slug),
+      variations: appCfg.variations, missing: false,
       source: e.source || null, updateAvailable: e.source === "library" ? computeUpdateAvailable(e.slug) : false,
     });
   }
@@ -2112,7 +2346,8 @@ function buildState() {
     apps.push({
       slug, name: slug, description: "", tags: [], dir: null, options: [],
       enabled: appCfg.enabled, status: rt.status, pid: rt.pid, blocked: rt.blocked,
-      lastDraw: rt.lastDraw, variation: appCfg.variation, scheduledVariation: rt.variationOverride,
+      lastDraw: rt.lastDraw, variation: appCfg.variation, scheduledVariation: claimedVariation(slug),
+      runtimeOwner: runtimeOwnerPayload(slug),
       variations: appCfg.variations, missing: true, source: null, updateAvailable: false,
     });
   }
@@ -2126,8 +2361,19 @@ function buildState() {
     screenOwner: currentScreenOwner(),
     apps,
     library: { lastCheck: libraryOverallLastCheck(), updatesAvailable: libraryUpdatesAvailableCount(), error: libraryFirstError() },
+    scrollers: scrollersPayload(),
     schedule: schedulePayload(),
   };
+}
+
+// Who is holding this app up right now, so the UI can say *why* an app it did
+// not enable is running. `null` when nothing claims it.
+function runtimeOwnerPayload(slug) {
+  const c = claimOn(slug);
+  if (!c) return null;
+  if (c.owner === SCHEDULE_OWNER) return { kind: "schedule", id: null, name: null };
+  const sc = findScroller(c.owner.slice("scroller:".length));
+  return { kind: "scroller", id: sc ? sc.id : null, name: sc ? sc.name : null };
 }
 
 function schedulePayload() {
@@ -2136,6 +2382,24 @@ function schedulePayload() {
     slots: config.schedule.slots,
     activeSlotId: scheduledSlotId,
   };
+}
+
+// The stored scrollers plus what each one is doing right now.
+function scrollersPayload() {
+  return config.scrollers.map((sc) => {
+    const run = scrollerRuns.get(sc.id) || null;
+    return {
+      id: sc.id,
+      name: sc.name,
+      enabled: sc.enabled,
+      baseDurationSec: sc.baseDurationSec,
+      steps: sc.steps,
+      running: !!run,
+      scheduled: scheduledScrollerId === sc.id,
+      activeStepId: run ? run.stepId : null,
+      activeSlug: run ? run.slug : null,
+    };
+  });
 }
 
 /* ---------------------------------- SSE ------------------------------------ */
@@ -2268,18 +2532,35 @@ function validateSlotBody(body, id) {
   if (!isHHMM(body.start)) return { error: 'start must be "HH:MM"' };
   if (!isEndHHMM(body.end)) return { error: 'end must be "HH:MM" (or "24:00")' };
   if (minutesOf(body.end) <= minutesOf(body.start)) return { error: "end must be later than start" };
+  const window = { id: id || crypto.randomUUID(), days, start: body.start, end: body.end };
+  // `kind` is optional on input: a body with a slug is an app slot, exactly as
+  // before scrollers existed.
+  if (body.kind !== undefined && body.kind !== "app" && body.kind !== "scroller") {
+    return { error: 'kind must be "app" or "scroller"' };
+  }
+  if (body.kind === "scroller" || (!body.slug && body.scrollerId !== undefined)) {
+    if (typeof body.scrollerId !== "string" || !body.scrollerId) return { error: "scrollerId required" };
+    if (!findScroller(body.scrollerId)) return { error: `unknown scroller: ${body.scrollerId}`, status: 404 };
+    return { slot: Object.assign(window, { kind: "scroller", scrollerId: body.scrollerId }) };
+  }
   if (typeof body.slug !== "string" || !body.slug) return { error: "slug required" };
   if (!findEntry(body.slug) && !config.apps[body.slug]) return { error: `unknown app: ${body.slug}`, status: 404 };
   const variation = typeof body.variation === "string" && body.variation ? body.variation : "default";
   const appCfg = getAppConfigView(body.slug);
   if (!appCfg.variations[variation]) return { error: `unknown variation: ${variation}`, status: 404 };
-  return { slot: { id: id || crypto.randomUUID(), days, start: body.start, end: body.end, slug: body.slug, variation } };
+  return { slot: Object.assign(window, { kind: "app", slug: body.slug, variation }) };
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// What a slot puts on the bar, for error messages.
+function slotTargetLabel(slot) {
+  if (slot.kind !== "scroller") return slot.slug;
+  const sc = findScroller(slot.scrollerId);
+  return sc ? `scroller "${sc.name}"` : `scroller ${slot.scrollerId}`;
+}
 function overlapError(slot, clash) {
   const days = sharedDays(slot, clash).map((d) => DAY_NAMES[d]).join(", ");
-  return `overlaps the ${clash.start}–${clash.end} slot for ${clash.slug} on ${days}`;
+  return `overlaps the ${clash.start}–${clash.end} slot for ${slotTargetLabel(clash)} on ${days}`;
 }
 
 async function apiSetSchedule(body, res) {
@@ -2327,6 +2608,107 @@ async function apiDeleteSlot(id, res) {
   config.schedule.slots.splice(i, 1);
   persist();
   await applySchedule();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+/* ------------------------------ scroller API ------------------------------- */
+
+// Full validation with a reason. `existing` is the scroller being updated, so
+// PUT can patch one field without resending the rest; it is null on create.
+// Returns { scroller } or { error, status? }.
+function validateScrollerBody(body, existing) {
+  if (!body || typeof body !== "object") return { error: "body must be an object" };
+  const name = body.name !== undefined ? String(body.name).trim() : existing ? existing.name : "";
+  if (!name) return { error: "name required" };
+  if (name.length > 60) return { error: "name must be 60 characters or fewer" };
+
+  let baseDurationSec = existing ? existing.baseDurationSec : DEFAULT_SCROLLER_DURATION_SEC;
+  if (body.baseDurationSec !== undefined && body.baseDurationSec !== null) {
+    baseDurationSec = coerceDuration(body.baseDurationSec);
+    if (!baseDurationSec) return { error: `baseDurationSec must be a whole number of seconds 1-${MAX_DURATION_SEC}` };
+  }
+
+  let steps = existing ? existing.steps : [];
+  if (body.steps !== undefined) {
+    if (!Array.isArray(body.steps)) return { error: "steps must be an array" };
+    steps = [];
+    for (const raw of body.steps) {
+      if (!raw || typeof raw !== "object") return { error: "every step must be an object" };
+      if (typeof raw.slug !== "string" || !raw.slug) return { error: "every step needs a slug" };
+      if (!findEntry(raw.slug) && !config.apps[raw.slug]) return { error: `unknown app: ${raw.slug}`, status: 404 };
+      // Every step names a variation explicitly; "default" is the fallback for
+      // a body that leaves it out, not a way to skip the choice.
+      const variation = typeof raw.variation === "string" && raw.variation ? raw.variation : "default";
+      if (!getAppConfigView(raw.slug).variations[variation]) return { error: `unknown variation: ${variation}`, status: 404 };
+      let durationSec = null;
+      if (raw.durationSec !== undefined && raw.durationSec !== null && raw.durationSec !== "") {
+        durationSec = coerceDuration(raw.durationSec);
+        if (!durationSec) return { error: `durationSec must be a whole number of seconds 1-${MAX_DURATION_SEC}` };
+      }
+      // Step ids are preserved across an update so the UI can keep pointing at
+      // "the step that is on screen" while the user reorders the rest.
+      const stepId = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+      steps.push({ id: stepId, slug: raw.slug, variation, durationSec });
+    }
+  }
+
+  const enabled = body.enabled !== undefined ? body.enabled === true : existing ? existing.enabled : false;
+  return { scroller: { id: existing ? existing.id : crypto.randomUUID(), name, enabled, baseDurationSec, steps } };
+}
+
+// Order matters to the cycle, so it is the array order — an update replaces
+// the whole `steps` array, which is also how reordering is expressed.
+async function apiCreateScroller(body, res) {
+  const v = validateScrollerBody(body, null);
+  if (v.error) return sendJSON(res, v.status || 400, { error: v.error });
+  config.scrollers.push(v.scroller);
+  persist();
+  await applyScrollers();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+async function apiUpdateScroller(id, body, res) {
+  const i = config.scrollers.findIndex((s) => s.id === id);
+  if (i === -1) return sendJSON(res, 404, { error: `unknown scroller: ${id}` });
+  const before = config.scrollers[i];
+  const v = validateScrollerBody(body, before);
+  if (v.error) return sendJSON(res, v.status || 400, { error: v.error });
+  // Renaming or toggling a scroller must not interrupt what is on the bar;
+  // changing what it cycles through starts the cycle over from step one.
+  const cycleChanged =
+    JSON.stringify({ steps: before.steps, base: before.baseDurationSec }) !==
+    JSON.stringify({ steps: v.scroller.steps, base: v.scroller.baseDurationSec });
+  config.scrollers[i] = v.scroller;
+  persist();
+  if (cycleChanged) await restartScrollerRun(id);
+  else await applyScrollers();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+// Deleting a scroller also drops the schedule slots that name it: a slot
+// pointing at a scroller that no longer exists could only ever be a silent
+// no-op in the calendar.
+async function apiDeleteScroller(id, res) {
+  const i = config.scrollers.findIndex((s) => s.id === id);
+  if (i === -1) return sendJSON(res, 404, { error: `unknown scroller: ${id}` });
+  config.scrollers.splice(i, 1);
+  config.schedule.slots = config.schedule.slots.filter((s) => s.kind !== "scroller" || s.scrollerId !== id);
+  persist();
+  await applyScrollers();
+  await applySchedule();
+  scheduleStateBroadcast();
+  sendJSON(res, 200, buildState());
+}
+
+async function apiSetScrollerEnabled(id, enabled, res) {
+  const sc = findScroller(id);
+  if (!sc) return sendJSON(res, 404, { error: `unknown scroller: ${id}` });
+  sc.enabled = enabled;
+  persist();
+  await applyScrollers();
   scheduleStateBroadcast();
   sendJSON(res, 200, buildState());
 }
@@ -2619,6 +3001,11 @@ async function handleManagerApi(req, res, p, method, u) {
       const body = await readJsonBody(req);
       return apiCreateSlot(body, res);
     }
+    if (p === "/api/_manager/scrollers" && method === "GET") return sendJSON(res, 200, { scrollers: scrollersPayload() });
+    if (p === "/api/_manager/scrollers" && method === "POST") {
+      const body = await readJsonBody(req);
+      return apiCreateScroller(body, res);
+    }
     if (p === "/api/_manager/library" && method === "GET") return apiLibraryGet(u.searchParams, res);
     if (p === "/api/_manager/library/check" && method === "POST") return apiLibraryCheck(res);
     if (p === "/api/_manager/library/install" && method === "POST") {
@@ -2654,6 +3041,19 @@ async function handleManagerApi(req, res, p, method, u) {
     }
     if ((m = p.match(/^\/api\/_manager\/schedule\/slots\/([^/]+)$/)) && method === "DELETE") {
       return apiDeleteSlot(decodeURIComponent(m[1]), res);
+    }
+    if ((m = p.match(/^\/api\/_manager\/scrollers\/([^/]+)$/)) && method === "PUT") {
+      const body = await readJsonBody(req);
+      return apiUpdateScroller(decodeURIComponent(m[1]), body, res);
+    }
+    if ((m = p.match(/^\/api\/_manager\/scrollers\/([^/]+)$/)) && method === "DELETE") {
+      return apiDeleteScroller(decodeURIComponent(m[1]), res);
+    }
+    if ((m = p.match(/^\/api\/_manager\/scrollers\/([^/]+)\/enable$/)) && method === "POST") {
+      return apiSetScrollerEnabled(decodeURIComponent(m[1]), true, res);
+    }
+    if ((m = p.match(/^\/api\/_manager\/scrollers\/([^/]+)\/disable$/)) && method === "POST") {
+      return apiSetScrollerEnabled(decodeURIComponent(m[1]), false, res);
     }
     if ((m = p.match(/^\/api\/_manager\/apps\/([^/]+)\/enable$/)) && method === "POST") return apiEnable(decodeURIComponent(m[1]), res);
     if ((m = p.match(/^\/api\/_manager\/apps\/([^/]+)\/disable$/)) && method === "POST") return apiDisable(decodeURIComponent(m[1]), res);
@@ -2844,6 +3244,9 @@ async function main() {
   // Weekly schedule: catch up on whatever slot is current right now (after a
   // reboot mid-window the app must come up), then tick.
   await applySchedule();
+  // Scrollers the user left enabled start cycling right away; a scroller a
+  // slot owns is picked up by applySchedule above.
+  await applyScrollers();
   setInterval(applySchedule, SCHEDULE_TICK_MS).unref();
 
   checkBarReachable();

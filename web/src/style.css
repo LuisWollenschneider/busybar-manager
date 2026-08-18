@@ -228,8 +228,9 @@ main{display:flex;flex-direction:column;gap:16px;width:100%;max-width:688px;marg
 .chip.update{background:var(--brand);color:#fff}
 .chip.local{background:var(--btn);color:var(--faint);font-weight:500;text-transform:none;letter-spacing:0}
 .chip.installed{background:color-mix(in srgb,var(--success) 16%,transparent);color:var(--success);font-weight:500;text-transform:none;letter-spacing:0}
-/* a schedule slot is driving this app right now (its variation override) */
+/* a schedule slot or a scroller is driving this app right now (its variation override) */
 .chip.scheduled{background:color-mix(in srgb,var(--brand) 18%,transparent);color:var(--brand);font-family:var(--mono);font-weight:500;letter-spacing:0}
+.chip.scroller{background:var(--btn);color:var(--muted)}
 .app-row-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .app-row-controls .spacer{flex:1}
 .app-meta{font-size:11px;color:var(--faint);font-family:var(--mono)}
@@ -260,6 +261,20 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
 @media(max-width:520px){.form-grid{grid-template-columns:1fr}}
 .kv-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+
+/* scrollers: the rows in the apps list, and the step editor in the modal */
+.scrollers-list{margin-bottom:10px}
+.scroller-row{background:color-mix(in srgb,var(--brand) 6%,var(--row-bg))}
+.scr-steps{display:flex;flex-direction:column;gap:6px}
+.scr-step{display:grid;grid-template-columns:18px minmax(0,1.4fr) minmax(0,1fr) 74px auto auto auto;gap:6px;align-items:center}
+.scr-step.live{outline:1px solid color-mix(in srgb,var(--brand) 45%,transparent);outline-offset:4px;border-radius:8px}
+.scr-step-idx{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:right}
+.scr-step input[type=number]{padding:7px 10px;font-size:12.5px;border-radius:10px}
+.scr-add{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+@media(max-width:640px){
+  .scr-step{grid-template-columns:18px minmax(0,1fr) 66px auto auto auto}
+  .scr-step-var{grid-column:2/-1}
+}
 .kv-add{font-size:12.5px}
 .subhead{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:18px 0 10px;font-weight:600}
 .subhead:first-child{margin-top:0}
@@ -306,6 +321,8 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .cal-now i{position:absolute;left:-3px;top:-3.5px;width:7px;height:7px;border-radius:50%;background:var(--error)}
 
 /* day picker in the slot editor */
+.field-wide{grid-column:1/-1}
+
 .day-picker{display:flex;gap:6px;flex-wrap:wrap}
 .day-toggle{cursor:pointer;border:none;background:var(--btn);color:var(--muted);font-family:var(--font);font-size:12.5px;font-weight:500;padding:8px 0;width:46px;border-radius:9px;transition:.15s}
 .day-toggle:hover{background:var(--btn-hover);color:var(--text)}
@@ -315,11 +332,17 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 /* settings tab section */
 .row-block{background:var(--row-bg);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}
 .settings-foot{display:flex;justify-content:flex-end;padding-top:4px}
-/* segmented control (local bar vs BUSY cloud) */
+/* Segmented control: a pill track holding equal-width options. Used for the
+   connection mode buttons (.seg-btn) and for the slot editor's app/scroller
+   radio pair (.seg-opt), which is the same control built out of labels so it
+   stays a real radiogroup. */
 .seg{display:flex;gap:4px;padding:3px;border-radius:999px;background:var(--btn);align-self:flex-start;max-width:100%;overflow-x:auto}
-.seg-btn{flex:1;cursor:pointer;border:none;background:transparent;color:var(--muted);font-family:var(--font);font-size:13px;font-weight:500;padding:7px 16px;border-radius:999px;white-space:nowrap;transition:.15s}
-.seg-btn:hover{color:var(--text)}
-.seg-btn.active{background:var(--elevated);color:var(--text);box-shadow:inset 0 1px 1px 0 var(--ring-in),0 0 0 1px var(--ring-out)}
+.seg-btn,.seg-opt{flex:1;cursor:pointer;border:none;background:transparent;color:var(--muted);font-family:var(--font);font-size:13px;font-weight:500;padding:7px 16px;border-radius:999px;white-space:nowrap;transition:.15s}
+.seg-btn:hover,.seg-opt:hover{color:var(--text)}
+.seg-btn.active,.seg-opt.on{background:var(--elevated);color:var(--text);box-shadow:inset 0 1px 1px 0 var(--ring-in),0 0 0 1px var(--ring-out)}
+.seg-opt{position:relative;display:inline-flex;align-items:center;justify-content:center;text-align:center}
+.seg-opt.disabled{opacity:.5;cursor:default}
+.seg-opt input{position:absolute;opacity:0;width:0;height:0}
 
 /* Controller tab — layered device panel (DevicePanel.vue). Every layer PNG is
    exported on the same 1920x472 canvas, so they stack on `inset:0` and stay

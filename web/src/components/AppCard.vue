@@ -5,11 +5,9 @@
         <span class="status-dot" :class="statusClass" :title="statusLabel"></span>
         <span class="app-name" :title="app.name">{{ app.name }}</span>
         <span v-if="isOwner" class="chip owner">SCREEN</span>
-        <span
-          v-if="app.scheduledVariation"
-          class="chip scheduled"
-          :title="`A schedule slot is running this app on the &quot;${app.scheduledVariation}&quot; variation`"
-        >SCHEDULED · {{ app.scheduledVariation }}</span>
+        <span v-if="app.scheduledVariation" class="chip scheduled" :title="ownerTitle">
+          {{ ownerLabel }} · {{ app.scheduledVariation }}
+        </span>
         <span v-if="app.blocked" class="chip blocked">409</span>
         <span v-if="app.missing" class="chip missing">folder missing</span>
         <span v-if="app.updateAvailable" class="chip update">update available</span>
@@ -79,6 +77,16 @@ const statusLabel = computed(
       stopped: 'stopped',
     }[props.app.status] || props.app.status)
 )
+
+// `runtimeOwner` is null on a server that predates scrollers, where an
+// override could only ever have come from the schedule.
+const ownerLabel = computed(() => (props.app.runtimeOwner?.kind === 'scroller' ? 'SCROLLER' : 'SCHEDULED'))
+const ownerTitle = computed(() => {
+  const owner = props.app.runtimeOwner
+  const variation = `on the "${props.app.scheduledVariation}" variation`
+  if (owner?.kind === 'scroller') return `The scroller "${owner.name}" has this app on the bar ${variation}`
+  return `A schedule slot is running this app ${variation}`
+})
 
 const variationNames = computed(() => Object.keys(props.app.variations || { default: {} }))
 const hasVariations = computed(() => variationNames.value.length > 0)
