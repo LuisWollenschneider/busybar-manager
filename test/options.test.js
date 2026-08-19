@@ -6,8 +6,9 @@
  * Spins up test/mock-bar.js and server.js against a temp apps dir holding one
  * app whose parser covers every shape the dashboard renders: bounded numbers
  * (a range metavar, a fractional one, a negative one, and choices=range()),
- * a short choice set, a plain metavar and a bare flag. Asserts the discovered
- * option list, and that a value picked for a slider actually reaches the app.
+ * a short choice set, a plain metavar, a bare flag and multi-name options.
+ * Asserts the discovered option list, and that a value picked for a slider
+ * actually reaches the app.
  */
 const assert = require("assert/strict");
 const { spawn } = require("child_process");
@@ -89,11 +90,13 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--host", default="127.0.0.1:8321")
-parser.add_argument("--volume", type=int, metavar="0-100", default=70, help="chime volume percentage (default: 70)")
+parser.add_argument("--volume", "-V", type=int, metavar="0-100", default=70, help="chime volume percentage (default: 70)")
 parser.add_argument("--gain", type=float, metavar="0.0-1.0", default=0.5, help="gain factor")
 parser.add_argument("--offset", type=int, metavar="-10-10", default=0, help="pixels to shift by")
 parser.add_argument("--steps", type=int, metavar="1..10", default=3, help="steps per cycle")
-parser.add_argument("--brightness", type=int, choices=range(0, 101), default=50, help="panel brightness")
+parser.add_argument("-b", "--brightness", type=int, choices=range(0, 101), default=50, help="panel brightness")
+parser.add_argument("--lang", "--language", choices=["de", "en", "nl"], default="en", help="ui language")
+parser.add_argument("-q", action="store_true", help="quiet")
 parser.add_argument("--theme", choices=["dark", "light"], default="dark", help="colour theme")
 parser.add_argument("--city", default="Amsterdam", help="city name")
 parser.add_argument("--dim", action="store_true", help="use dimmed colours")
@@ -182,6 +185,12 @@ async function main() {
     step: 1,
     help: "panel brightness",
   });
+
+  log("an option with several names is reported once, under its longest name");
+  assert.deepEqual(optOf(app, "--language").choices, ["de", "en", "nl"]);
+  assert.equal(optOf(app, "--lang"), undefined, "the shorter alias must not show up, even when argparse lists it first");
+  assert.equal(optOf(app, "-b"), undefined, "the short name of --brightness must not show up on its own");
+  assert.equal(optOf(app, "-q").type, "bool", "a short-only flag is reported under its short name");
 
   log("short choice sets, plain metavars and bare flags are unchanged");
   assert.deepEqual(optOf(app, "--theme").choices, ["dark", "light"]);
