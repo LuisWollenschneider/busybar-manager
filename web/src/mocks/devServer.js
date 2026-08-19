@@ -271,7 +271,8 @@ function createMockState() {
         },
         options: [
           { flag: '--host', type: 'str', default: '10.0.4.20', choices: null, help: 'BUSY Bar host (managed by the manager)' },
-          { flag: '--radius', type: 'int', default: '25', choices: null, help: 'Search radius in kilometers' },
+          { flag: '--radius', type: 'int', default: '25', choices: null, min: 1, max: 200, step: 1, help: 'Search radius in kilometers' },
+          { flag: '--volume', type: 'int', default: '70', choices: null, min: 0, max: 100, step: 1, help: 'Chime volume percentage' },
           { flag: '--dim', type: 'bool', default: false, choices: null, help: 'Use dimmed colors' },
           { flag: '--units', type: 'str', default: 'metric', choices: ['metric', 'imperial'], help: 'Units' },
         ],

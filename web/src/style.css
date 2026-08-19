@@ -260,6 +260,27 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 .check-row{display:flex;align-items:center;gap:9px;font-size:13.5px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 14px}
 @media(max-width:520px){.form-grid{grid-template-columns:1fr}}
+/* bounded numeric option (see parseHelpOptions): the track/knob vocabulary is
+   the .switch one — grey --track, brand fill, white knob with the same shadow.
+   The filled part is painted by the element itself from a --fill percentage,
+   since CSS has no way to read a range input value. */
+.range-field{display:flex;flex-direction:column;gap:4px}
+.range-row{display:flex;align-items:center;gap:12px}
+/* the type selector is needed: the base input[type=number] rule is width:100%,
+   which would leave the track no room at all */
+.range-row input[type=number].range-val{width:68px;flex:none;text-align:right;padding:7px 10px;font-size:12.5px}
+.range{-webkit-appearance:none;appearance:none;flex:1 1 auto;min-width:0;height:18px;margin:0;background:transparent;cursor:pointer}
+.range::-webkit-slider-runnable-track{height:6px;border-radius:999px;background:linear-gradient(to right,var(--brand) var(--fill,0%),var(--track) var(--fill,0%))}
+.range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;margin-top:-5px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .15s}
+.range:hover::-webkit-slider-thumb,.range:active::-webkit-slider-thumb{transform:scale(1.12)}
+.range:focus{outline:none}
+.range:focus-visible::-webkit-slider-thumb{box-shadow:0 1px 3px rgba(0,0,0,.25),0 0 0 3px color-mix(in srgb,var(--brand) 35%,transparent)}
+.range::-moz-range-track{height:6px;border-radius:999px;background:var(--track)}
+.range::-moz-range-progress{height:6px;border-radius:999px;background:var(--brand)}
+.range::-moz-range-thumb{width:16px;height:16px;border:none;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.range:focus-visible::-moz-range-thumb{box-shadow:0 1px 3px rgba(0,0,0,.25),0 0 0 3px color-mix(in srgb,var(--brand) 35%,transparent)}
+/* end labels sit under the track only, not under the value field */
+.range-ends{display:flex;justify-content:space-between;font-size:11px;color:var(--faint);padding-right:80px}
 .kv-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
 
 /* scrollers: the rows in the apps list, and the step editor in the modal */
