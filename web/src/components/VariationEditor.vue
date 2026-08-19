@@ -30,6 +30,32 @@
             <input :id="'opt-' + opt.flag" type="checkbox" v-model="formArgs[opt.flag]" />
             enable
           </label>
+          <div v-else-if="isRange(opt)" class="range-field">
+            <div class="range-row">
+              <input
+                class="range"
+                type="range"
+                :aria-label="opt.flag"
+                :min="opt.min"
+                :max="opt.max"
+                :step="opt.step ?? 'any'"
+                :value="sliderValue(opt)"
+                :style="{ '--fill': fillPct(opt) + '%' }"
+                @input="formArgs[opt.flag] = $event.target.value"
+              />
+              <input
+                :id="'opt-' + opt.flag"
+                class="range-val"
+                type="number"
+                :min="opt.min"
+                :max="opt.max"
+                :step="opt.step ?? 'any'"
+                :placeholder="String(opt.default ?? opt.min)"
+                v-model="formArgs[opt.flag]"
+              />
+            </div>
+            <div class="range-ends"><span>{{ opt.min }}</span><span>{{ opt.max }}</span></div>
+          </div>
           <input
             v-else
             :id="'opt-' + opt.flag"
@@ -120,6 +146,25 @@ const saveAsName = ref(editingName.value)
 const optionFields = computed(() => (props.app.options || []).filter((o) => o.flag !== '--host'))
 const envFields = computed(() => props.app.envSpec || [])
 const variationNames = computed(() => Object.keys(props.app.variations || { default: {} }))
+
+// An option argparse bounded ("--volume 0-100", or choices=range(...)) gets a
+// slider. Blank still means "unset": the slider then sits on the app's own
+// default and the number field shows it as a placeholder.
+function isRange(opt) {
+  return (opt.type === 'int' || opt.type === 'float') && Number.isFinite(opt.min) && Number.isFinite(opt.max)
+}
+
+function sliderValue(opt) {
+  const raw = formArgs[opt.flag]
+  const n = Number(raw === '' || raw === undefined || raw === null ? opt.default : raw)
+  if (!Number.isFinite(n)) return opt.min
+  return Math.min(opt.max, Math.max(opt.min, n))
+}
+
+// The track paints its own filled part (CSS cannot read a range input value).
+function fillPct(opt) {
+  return ((sliderValue(opt) - opt.min) / (opt.max - opt.min)) * 100
+}
 
 function withLabel(svg, label) {
   return `${svg}<span>${label}</span>`

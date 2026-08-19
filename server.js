@@ -456,8 +456,11 @@ function discoverOptions(scriptPath) {
 
 function parseHelpOptions(help) {
   const options = [];
-  // "  --theme {a,b,c}  help text" / "  --lat LAT  help text" / "  --test  help"
-  const re = /^[ ]{2}(--[\w-]+)(?:[ =](\{[^}]*\}|[A-Z][\w-]*))?(?:[ \t]{2,}(\S.*))?$/gm;
+  // "  --theme {a,b,c}  help text" / "  --lat LAT  help text" / "  --volume 0-100
+  // help text" / "  --test  help". The metavar is whatever single token argparse
+  // prints after the flag; the help text always starts a column (2+ spaces) or a
+  // line later, so it can never be mistaken for one.
+  const re = /^[ ]{2}(--[\w-]+)(?:[ =](\{[^}]*\}|\S+))?(?:[ \t]{2,}(\S.*))?$/gm;
   let m;
   while ((m = re.exec(help)) !== null) {
     const [, flag, meta, rest] = m;
@@ -468,17 +471,49 @@ function parseHelpOptions(help) {
       const cont = after.match(/^\n\s{10,}(\S.*)/);
       if (cont) hint = cont[1];
     }
-    const def = (hint.match(/\(default:\s*([^)]+)\)/) || [])[1] || null;
+    const def = (hint.match(/\(default:?\s*([^)]+)\)/) || [])[1] || null;
+    const opt = { flag, type: "str", default: def, choices: null, min: null, max: null, step: null, help: hint };
     if (meta && meta.startsWith("{")) {
       const choices = meta.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
-      options.push({ flag, type: "choice", default: def, choices, help: hint });
+      const span = choiceSpan(choices);
+      if (span) Object.assign(opt, span);
+      else Object.assign(opt, { type: "choice", choices });
     } else if (!meta) {
-      options.push({ flag, type: "bool", default: def, choices: null, help: hint });
+      opt.type = "bool";
     } else {
-      options.push({ flag, type: "str", default: def, choices: null, help: hint });
+      Object.assign(opt, metaSpan(meta) || {});
     }
+    options.push(opt);
   }
   return options;
+}
+
+// A bounded numeric option, which the dashboard renders as a slider instead of
+// a free-text field. argparse shows the bounds two ways: as a hand-written
+// metavar ("--volume 0-100", also written "0..100"), or, for `choices=range(…)`,
+// as a run of consecutive integers.
+const RANGE_META = /^(-?\d+(?:\.\d+)?)(?:\.\.\.?|-|–)(-?\d+(?:\.\d+)?)$/;
+// Shorter runs stay a dropdown: picking one of a handful of values is easier there.
+const CHOICE_SPAN_MIN = 12;
+
+function metaSpan(meta) {
+  const m = RANGE_META.exec(meta);
+  if (!m) return null;
+  const min = Number(m[1]);
+  const max = Number(m[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+  if (!m[1].includes(".") && !m[2].includes(".")) return { type: "int", choices: null, min, max, step: 1 };
+  // A fractional range is continuous: null step, so the slider is not snapped.
+  return { type: "float", choices: null, min, max, step: null };
+}
+
+function choiceSpan(choices) {
+  if (choices.length < CHOICE_SPAN_MIN || !choices.every((c) => /^-?\d+$/.test(c))) return null;
+  const nums = choices.map(Number);
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] !== nums[i - 1] + 1) return null;
+  }
+  return { type: "int", choices: null, min: nums[0], max: nums[nums.length - 1], step: 1 };
 }
 
 // Discover an app's declared environment variables from its .env.example (or
