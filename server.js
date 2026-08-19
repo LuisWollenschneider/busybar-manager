@@ -454,17 +454,30 @@ function discoverOptions(scriptPath) {
   return options;
 }
 
+// One option line: the names argparse prints, then the help text a column
+// (2+ spaces) or a line later, so it can never be mistaken for a metavar.
+// An option may carry several names, and the two argparse layouts both occur:
+// "  --language, --lang {de,en}" (Python >= 3.13, metavar once at the end) and
+// "  --language LANG, --lang LANG" (older, metavar repeated per name).
+const OPT_LINE = /^[ ]{2}(-{1,2}[\w-]+(?:[ =](?:\{[^}]*\}|[^\s,]+))?(?:,[ ]+-{1,2}[\w-]+(?:[ =](?:\{[^}]*\}|[^\s,]+))?)*)(?:[ \t]{2,}(\S.*))?$/gm;
+// A name is only ever the first token or one that follows a comma — which is
+// what keeps a negative metavar ("--offset -10-10") from reading as one.
+const OPT_NAME = /(?:^|,[ ]+)(-{1,2}[\w-]+)/g;
+const OPT_META = /(?:^|,[ ]+)-{1,2}[\w-]+[ =](\{[^}]*\}|[^\s,]+)/;
+
 function parseHelpOptions(help) {
   const options = [];
-  // "  --theme {a,b,c}  help text" / "  --lat LAT  help text" / "  --volume 0-100
-  // help text" / "  --test  help". The metavar is whatever single token argparse
-  // prints after the flag; the help text always starts a column (2+ spaces) or a
-  // line later, so it can never be mistaken for one.
-  const re = /^[ ]{2}(--[\w-]+)(?:[ =](\{[^}]*\}|\S+))?(?:[ \t]{2,}(\S.*))?$/gm;
+  OPT_LINE.lastIndex = 0;
   let m;
-  while ((m = re.exec(help)) !== null) {
-    const [, flag, meta, rest] = m;
-    if (ARG_SKIP.has(flag)) continue;
+  while ((m = OPT_LINE.exec(help)) !== null) {
+    const [, invocation, rest] = m;
+    const names = Array.from(invocation.matchAll(OPT_NAME), (n) => n[1]);
+    if (names.some((n) => ARG_SKIP.has(n))) continue;
+    // argparse accepts any of the names, so the longest one — the spelled-out
+    // form a user recognises (--language over --lang, over -l) — is the one
+    // reported, and the one a variation stores.
+    const flag = names.reduce((best, name) => (name.length > best.length ? name : best), names[0]);
+    const meta = (OPT_META.exec(invocation) || [])[1] || null;
     let hint = rest || "";
     if (!hint) {
       const after = help.slice(m.index + m[0].length);
